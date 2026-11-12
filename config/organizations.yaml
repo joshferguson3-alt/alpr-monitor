@@ -1,0 +1,176 @@
+# Hand-entered from the spec's category table. About one entry per category
+# across Georgia and Tennessee. RSS feeds that 404 are logged and skipped.
+
+- id: ga-chiefs
+  name: Georgia Association of Chiefs of Police
+  category: law_enforcement_association
+  state: GA
+  source_urls: [https://gachiefs.com/]
+
+- id: tn-chiefs
+  name: Tennessee Association of Chiefs of Police
+  category: law_enforcement_association
+  state: TN
+  source_urls: [https://www.tnchiefs.org/]
+
+- id: ga-sheriffs
+  name: Georgia Sheriffs' Association
+  category: law_enforcement_association
+  state: GA
+  source_urls: [https://georgiasheriffs.org/]
+
+- id: tn-sheriffs
+  name: Tennessee Sheriffs' Association
+  category: law_enforcement_association
+  state: TN
+  source_urls: [https://www.tnsheriffs.com/]
+
+- id: ga-fop
+  name: Georgia State Lodge Fraternal Order of Police
+  category: law_enforcement_association
+  state: GA
+  source_urls: [https://www.gafop.com/]
+
+- id: ga-municipal
+  name: Georgia Municipal Association
+  category: local_government_association
+  state: GA
+  source_urls: [https://www.gacities.com/]
+
+- id: accg
+  name: Association County Commissioners of Georgia
+  category: local_government_association
+  state: GA
+  source_urls: [https://www.accg.org/]
+
+- id: tn-municipal
+  name: Tennessee Municipal League
+  category: local_government_association
+  state: TN
+  source_urls: [https://www.tml1.org/]
+
+- id: tn-counties
+  name: Tennessee County Services Association
+  category: local_government_association
+  state: TN
+  source_urls: [https://www.tncounties.org/]
+
+- id: aclu
+  name: American Civil Liberties Union
+  category: civil_liberties
+  state: null
+  source_urls: [https://www.aclu.org/]
+
+- id: aclu-georgia
+  name: ACLU of Georgia
+  category: civil_liberties
+  state: GA
+  source_urls: [https://www.acluga.org/]
+
+- id: aclu-tennessee
+  name: ACLU of Tennessee
+  category: civil_liberties
+  state: TN
+  source_urls: [https://www.aclu-tn.org/]
+
+- id: eff
+  name: Electronic Frontier Foundation
+  category: civil_liberties
+  state: null
+  source_urls: [https://www.eff.org/]
+
+- id: institute-for-justice
+  name: Institute for Justice
+  category: civil_liberties
+  state: null
+  source_urls: [https://ij.org/]
+
+- id: eff-atlas
+  name: Atlas of Surveillance
+  category: civil_liberties
+  state: null
+  source_urls: [https://atlasofsurveillance.org/]
+
+- id: flock-safety
+  name: Flock Safety
+  category: vendor
+  state: null
+  source_urls: [https://www.flocksafety.com/]
+
+- id: axon
+  name: Axon
+  category: vendor
+  state: null
+  source_urls: [https://www.axon.com/]
+
+- id: motorola-solutions
+  name: Motorola Solutions
+  category: vendor
+  state: null
+  source_urls: [https://www.motorolasolutions.com/]
+
+- id: gbi
+  name: Georgia Bureau of Investigation
+  category: state_executive
+  state: GA
+  source_urls: [https://gbi.georgia.gov/]
+
+- id: tbi
+  name: Tennessee Bureau of Investigation
+  category: state_executive
+  state: TN
+  source_urls: [https://www.tn.gov/tbi.html]
+
+- id: ga-attorney-general
+  name: Georgia Attorney General
+  category: state_executive
+  state: GA
+  source_urls: [https://law.georgia.gov/]
+
+- id: tn-attorney-general
+  name: Tennessee Attorney General
+  category: state_executive
+  state: TN
+  source_urls: [https://www.tn.gov/attorneygeneral.html]
+
+- id: ga-governor
+  name: Office of the Governor of Georgia
+  category: state_executive
+  state: GA
+  source_urls: [https://gov.georgia.gov/]
+
+- id: tn-governor
+  name: Office of the Governor of Tennessee
+  category: state_executive
+  state: TN
+  source_urls: [https://www.tn.gov/governor.html]
+
+- id: ga-doas
+  name: Georgia Department of Administrative Services
+  category: state_executive
+  state: GA
+  source_urls: [https://doas.georgia.gov/]
+
+- id: gdot
+  name: Georgia Department of Transportation
+  category: state_executive
+  state: GA
+  source_urls: [https://www.dot.ga.gov/]
+
+- id: rough-draft-atlanta
+  name: Rough Draft Atlanta
+  category: media
+  state: GA
+  source_urls: [https://roughdraftatlanta.com/]
+
+- id: georgia-recorder
+  name: Georgia Recorder
+  category: media
+  state: GA
+  source_urls: [https://georgiarecorder.com/]
+
+- id: police1
+  name: Police1
+  category: media
+  state: null
+  source_urls: [https://www.police1.com/]

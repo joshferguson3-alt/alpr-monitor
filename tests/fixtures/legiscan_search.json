@@ -1,0 +1,16 @@
+{
+  "status": "OK",
+  "searchresult": {
+    "summary": {"page": "1 of 1", "count": 1},
+    "0": {
+      "relevance": 100,
+      "state": "GA",
+      "bill_number": "HB100",
+      "bill_id": 100,
+      "change_hash": "abc",
+      "url": "https://legiscan.com/GA/bill/HB100/2026",
+      "title": "License plate reader retention",
+      "last_action_date": "2026-11-01"
+    }
+  }
+}

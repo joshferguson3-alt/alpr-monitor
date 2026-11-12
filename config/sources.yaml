@@ -1,0 +1,194 @@
+# One source per feed. Agency differences stay in this file.
+# Collectors that need a missing API key log "missing key, skipped" and the run continues.
+
+- id: brookhaven-meetings
+  collector: primegov
+  entity: brookhaven-pd
+  url: https://brookhavenga.primegov.com/public/portal
+  cadence: daily
+  doc_type: agenda
+
+- id: brookhaven-news
+  collector: generic_html
+  entity: brookhaven-pd
+  url: https://www.brookhavenga.gov/m/newsflash
+  cadence: daily
+  doc_type: press
+  selectors:
+    item: ".listing, .newsFlashItem, article .item"
+    title: "a"
+    link: "a"
+
+- id: dunwoody-meetings
+  collector: generic_html
+  entity: dunwoody-pd
+  url: https://dunwoodyga.hylandcloud.com/211agendaonline/Meetings
+  cadence: daily
+  doc_type: agenda
+  link_contains: ViewMeeting
+  selectors:
+    item: "a"
+    title: "a"
+    link: "a"
+
+- id: sandy-springs-meetings
+  collector: civicplus
+  entity: sandy-springs-pd
+  url: https://sandyspringsga.portal.civicclerk.com/
+  mode: civicclerk
+  tenant: sandyspringsga
+  cadence: daily
+  doc_type: agenda
+  categories:
+    - City Council
+    - Mayor and Council
+
+- id: marietta-meetings
+  collector: civicplus
+  entity: marietta-pd
+  url: https://www.mariettaga.gov/AgendaCenter
+  mode: agenda_center
+  cadence: daily
+  doc_type: agenda
+
+- id: roswell-meetings
+  collector: iqm2
+  entity: roswell-pd
+  url: https://roswellcityga.iqm2.com/Citizens/Default.aspx
+  cadence: daily
+  doc_type: agenda
+  bodies:
+    - Mayor and Council
+
+- id: johns-creek-news
+  collector: rss
+  entity: johns-creek-pd
+  url: https://johnscreekga.gov/feed/
+  cadence: daily
+  doc_type: press
+
+- id: roswell-youtube
+  collector: youtube
+  entity: roswell-pd
+  url: https://www.youtube.com/CityofRoswell
+  cadence: daily
+  doc_type: transcript
+
+- id: johns-creek-youtube
+  collector: youtube
+  entity: johns-creek-pd
+  url: https://www.youtube.com/johnscreekgagov
+  cadence: daily
+  doc_type: transcript
+
+- id: ga-bills
+  collector: legiscan
+  state: GA
+  cadence: daily
+  doc_type: bill
+
+- id: tn-bills
+  collector: legiscan
+  state: TN
+  cadence: daily
+  doc_type: bill
+
+- id: congress-bills
+  collector: congress
+  cadence: weekly
+  doc_type: bill
+
+- id: court-opinions
+  collector: courtlistener
+  cadence: weekly
+  doc_type: court
+
+- id: ga-ag-opinions
+  collector: generic_html
+  entity: ga-attorney-general
+  url: https://law.georgia.gov/opinions
+  cadence: weekly
+  doc_type: press
+  selectors:
+    item: "article, .views-row, li"
+    title: "a"
+    link: "a"
+
+- id: tn-ag-opinions
+  collector: generic_html
+  entity: tn-attorney-general
+  url: https://www.tn.gov/attorneygeneral/opinions.html
+  cadence: weekly
+  doc_type: press
+  selectors:
+    item: "article, li, .views-row"
+    title: "a"
+    link: "a"
+
+- id: openstates-ga
+  collector: openstates
+  state: GA
+  cadence: monthly
+  doc_type: bill
+
+- id: openstates-tn
+  collector: openstates
+  state: TN
+  cadence: monthly
+  doc_type: bill
+
+- id: eff-news
+  collector: rss
+  entity: eff
+  url: https://www.eff.org/rss/updates.xml
+  cadence: daily
+  doc_type: news
+
+- id: aclu-ga-news
+  collector: rss
+  entity: aclu-georgia
+  url: https://www.acluga.org/feed
+  cadence: daily
+  doc_type: news
+
+- id: georgia-recorder
+  collector: rss
+  entity: georgia-recorder
+  url: https://georgiarecorder.com/feed/
+  cadence: daily
+  doc_type: news
+
+- id: rough-draft
+  collector: rss
+  entity: rough-draft-atlanta
+  url: https://roughdraftatlanta.com/feed/
+  cadence: daily
+  doc_type: news
+
+- id: police1-news
+  collector: rss
+  entity: police1
+  url: https://www.police1.com/law-enforcement-products/police-technology/rss/
+  cadence: daily
+  doc_type: news
+
+- id: ij-news
+  collector: rss
+  entity: institute-for-justice
+  url: https://ij.org/feed/
+  cadence: weekly
+  doc_type: news
+
+- id: flock-news
+  collector: rss
+  entity: flock-safety
+  url: https://www.flocksafety.com/blog/rss.xml
+  cadence: daily
+  doc_type: press
+
+- id: axon-news
+  collector: rss
+  entity: axon
+  url: https://www.axon.com/newsroom/rss
+  cadence: daily
+  doc_type: press

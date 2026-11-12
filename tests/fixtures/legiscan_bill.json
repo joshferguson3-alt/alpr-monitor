@@ -1,0 +1,12 @@
+{
+  "status": "OK",
+  "bill": {
+    "bill_id": 100,
+    "bill_number": "HB100",
+    "title": "License plate reader retention",
+    "description": "A bill to limit license plate reader data retention to 30 days.",
+    "url": "https://legiscan.com/GA/bill/HB100/2026",
+    "sponsors": [{"name": "Brandon Gurley", "people_id": 1}],
+    "history": [{"date": "2026-11-01", "action": "House hearing scheduled"}]
+  }
+}

@@ -1,0 +1,132 @@
+# Version 1 agencies. Sworn counts were checked against public sources on 2026-11-12.
+# Cobb County PD (639 sworn, FBI 2025) and Gwinnett County PD (929 authorized sworn, 2026 budget)
+# are outside 41-550 and are not in this list. Replacements are Roswell PD and Johns Creek PD.
+#
+# Segments: inside 1-40, mid_city 41-100, t1200 101-550, major 551+.
+
+- id: brookhaven-pd
+  name: Brookhaven Police Department
+  state: GA
+  type: municipal_police
+  # 100 sworn officers. City of Brookhaven State of the City 2026:
+  # https://www.brookhavenga.gov/DocumentCenter/View/4293/State-of-the-City-2026-PDF
+  # The older Who We Are page still says 93 authorized full-time sworn and cites a December 2020 snapshot:
+  # https://www.brookhavenga.gov/195/Who-We-Are
+  sworn_officers: 100
+  segment: mid_city
+  governing_body: Brookhaven City Council
+  # PrimeGov portal. robots.txt is "User-agent: * / Disallow: /", so the collector skips it.
+  meeting_platform: primegov
+  meeting_url: https://brookhavenga.primegov.com/public/portal
+  youtube_channel: null
+  alpr_vendor: unknown
+  alpr_camera_count: null
+  flock_transparency_url: null
+  contract_end_date: null
+  legislative_districts: {state_house: [], state_senate: [], us_house: []}
+  aliases: ["Brookhaven PD", "Brookhaven Police"]
+
+- id: dunwoody-pd
+  name: Dunwoody Police Department
+  state: GA
+  type: municipal_police
+  # 66 sworn officers reported to the FBI for 2025, ORI GA0447100.
+  # https://policecensus.com/agencies/ga/dunwoody-police-department
+  # A city news release on 2023-02-16 said 64 sworn members:
+  # https://www.dunwoodyga.gov/Home/Components/News/News/401/319
+  sworn_officers: 66
+  segment: mid_city
+  governing_body: Dunwoody City Council
+  # Hyland OnBase Agenda Online. The city site returned 403 to this client; the portal did not publish a robots.txt.
+  meeting_platform: other
+  meeting_url: https://dunwoodyga.hylandcloud.com/211agendaonline/Meetings
+  youtube_channel: null
+  alpr_vendor: unknown
+  alpr_camera_count: null
+  flock_transparency_url: null
+  contract_end_date: null
+  legislative_districts: {state_house: [], state_senate: [], us_house: []}
+  aliases: ["Dunwoody PD", "Dunwoody Police"]
+
+- id: sandy-springs-pd
+  name: Sandy Springs Police Department
+  state: GA
+  type: municipal_police
+  # 152 sworn officers. Department site: https://www.sandyspringsgapolice.gov/
+  sworn_officers: 152
+  segment: t1200
+  governing_body: Sandy Springs City Council
+  # CivicPlus CivicClerk. Public OData API, no login. robots.txt allows User-agent: *.
+  meeting_platform: civicplus
+  meeting_url: https://sandyspringsga.portal.civicclerk.com/
+  youtube_channel: null
+  alpr_vendor: unknown
+  alpr_camera_count: null
+  flock_transparency_url: null
+  contract_end_date: null
+  legislative_districts: {state_house: [], state_senate: [], us_house: []}
+  aliases: ["Sandy Springs PD", "Sandy Springs Police", "SSPD"]
+
+- id: marietta-pd
+  name: Marietta Police Department
+  state: GA
+  type: municipal_police
+  # 139 full-time officers (and 3 part-time). https://www.mariettaga.gov/825/About-Us
+  sworn_officers: 139
+  segment: t1200
+  governing_body: Marietta City Council
+  meeting_platform: civicplus
+  meeting_url: https://www.mariettaga.gov/AgendaCenter
+  youtube_channel: null
+  alpr_vendor: unknown
+  alpr_camera_count: null
+  flock_transparency_url: null
+  contract_end_date: null
+  legislative_districts: {state_house: [], state_senate: [], us_house: []}
+  aliases: ["Marietta PD", "Marietta Police"]
+
+- id: roswell-pd
+  name: Roswell Police Department
+  state: GA
+  type: municipal_police
+  # Replaces Cobb County Police Department (639 sworn, FBI 2025, outside 41-550):
+  # https://policecensus.com/agencies/ga/cobb-county-police-department
+  # 160 sworn officer positions, fully staffed.
+  # https://www.roswellgov.com/government/departments-division/police-department/
+  sworn_officers: 160
+  segment: t1200
+  governing_body: Roswell Mayor and Council
+  # Current portal is IQM2, not the stale Legistar site (last events in that API are from 2014).
+  # IQM2 robots.txt sets Crawl-delay: 60 and does not disallow the citizens portal.
+  meeting_platform: other
+  meeting_url: https://roswellcityga.iqm2.com/Citizens/Default.aspx
+  youtube_channel: https://www.youtube.com/CityofRoswell
+  alpr_vendor: unknown
+  alpr_camera_count: null
+  flock_transparency_url: null
+  contract_end_date: null
+  legislative_districts: {state_house: [], state_senate: [], us_house: []}
+  aliases: ["Roswell PD", "Roswell Police"]
+
+- id: johns-creek-pd
+  name: Johns Creek Police Department
+  state: GA
+  type: municipal_police
+  # Replaces Gwinnett County Police Department (929 authorized sworn in the 2026 budget, outside 41-550):
+  # https://www.gwinnettcounty.com/documents/d/gwinnett-county/gwinnett-county-2026-budget-document
+  # 2025 annual report staffing table: current sworn strength 78, authorized sworn strength 88.
+  # https://johnscreekga.gov/app/uploads/2026/05/jcpd-annual-report-2025.pdf
+  sworn_officers: 78
+  segment: mid_city
+  governing_body: Johns Creek City Council
+  # Granicus archive robots.txt is "User-agent: * / Disallow: /", so meeting files are a manual check.
+  # The city news feed on johnscreekga.gov allows User-agent: *.
+  meeting_platform: other
+  meeting_url: https://johnscreekga.granicus.com/ViewPublisher.php?view_id=1
+  youtube_channel: https://www.youtube.com/johnscreekgagov
+  alpr_vendor: unknown
+  alpr_camera_count: null
+  flock_transparency_url: null
+  contract_end_date: null
+  legislative_districts: {state_house: [], state_senate: [], us_house: []}
+  aliases: ["Johns Creek PD", "Johns Creek Police", "JCPD"]

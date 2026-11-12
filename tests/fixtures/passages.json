@@ -1,0 +1,12 @@
+[
+  {"id": "rel-contract", "relevant": true, "text": "The city council will vote December 8, 2026 on a Flock Safety contract for license plate reader cameras."},
+  {"id": "rel-budget", "relevant": true, "text": "The proposed police budget adds $50,000 for ALPR camera maintenance."},
+  {"id": "rel-bill", "relevant": true, "text": "House Bill 500 would limit how long license plate reader data may be retained."},
+  {"id": "rel-chief", "relevant": true, "text": "The chief told the council the real-time crime center needs the plate reader cameras to stay online."},
+  {"id": "rel-comment", "relevant": true, "text": "During public comment, nine speakers opposed the surveillance camera contract and two speakers supported it."},
+  {"id": "no-park", "relevant": false, "text": "The parks department will renovate the picnic pavilion and replace two grills."},
+  {"id": "no-zoning", "relevant": false, "text": "A restaurant on Main Street requested a zoning variance for outdoor seating."},
+  {"id": "no-geese", "relevant": false, "text": "A flock of geese settled on the lake behind city hall after the storm."},
+  {"id": "no-library", "relevant": false, "text": "The library summer reading program begins June 1 and is open to all ages."},
+  {"id": "no-road", "relevant": false, "text": "Public works opened bids to resurface three miles of Oak Street."}
+]

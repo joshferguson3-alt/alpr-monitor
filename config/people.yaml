@@ -1,0 +1,26 @@
+# Named people are public officials speaking in an official capacity.
+# Resident speakers are never stored by name. The seed script prints additional
+# legislator YAML for review and does not write this file.
+
+- id: brandon-gurley
+  name: Brandon Gurley
+  role: Chief of Police
+  body: Brookhaven Police Department
+  state: GA
+  district: null
+  agency_ids: [brookhaven-pd]
+  on_governing_body: false
+  source_urls:
+    - https://www.brookhavenga.gov/ArchiveCenter/ViewFile/Item/246
+
+- id: james-conroy
+  name: James W. Conroy
+  role: Chief of Police
+  body: Roswell Police Department
+  state: GA
+  district: null
+  agency_ids: [roswell-pd]
+  on_governing_body: false
+  source_urls:
+    - https://www.roswellgov.com/staff-directory/james-w-conroy/
+    - https://www.roswellgov.com/government/departments-division/police-department/

@@ -1,0 +1,31 @@
+# Strong terms: one match is enough.
+# Weak terms: a second keyword (strong or weak) must sit within 300 characters.
+# "Flock" matches only when capitalized mid-sentence, or next to
+# camera, safety, contract, or license. Lowercase "flock" alone does not match.
+# "LPR" is matched as an uppercase acronym and still needs a second term.
+
+strong:
+  - license plate reader
+  - license plate recognition
+  - ALPR
+  - plate reader
+  - Flock Safety
+  - Flock camera
+  - Axon Outpost
+  - Axon Lightpost
+  - Fusus
+  - Vigilant
+  - Rekor
+  - real-time crime center
+  - vehicle recognition camera
+
+weak:
+  - Flock
+  - LPR
+  - RTCC
+  - surveillance camera
+  - hot list
+  - data retention
+  - camera contract
+  - Motorola Solutions
+  - Axon

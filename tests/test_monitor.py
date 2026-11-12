@@ -1240,6 +1240,84 @@ def test_disabled_source_is_skipped_not_an_error(tmp_path, capsys):
     store.close()
 
 
+def test_lookback_reclassifies_stored_documents_without_duplicate_signals(tmp_path, capsys, monkeypatch):
+    from datetime import timedelta
+
+    from monitor.run import window_for
+
+    monkeypatch.setenv("DIGEST_TO", "josh.ferguson3@gmail.com")
+    sent = []
+    store = Store(tmp_path / "m.sqlite")
+    store.insert_document(
+        {
+            "source_id": "marietta-news",
+            "url": "https://example.test/old-story",
+            "content_hash": "already-stored",
+            "title": "Older agenda",
+            "doc_type": "news",
+            "published_at": "2026-10-13",
+            "passed_prefilter": 0,
+        }
+    )
+    narrow, _until = window_for(store, "marietta-news", TODAY)
+    assert narrow == TODAY - timedelta(days=14)
+    wide, _until = window_for(store, "marietta-news", TODAY, 40)
+    assert wide == TODAY - timedelta(days=40)
+    http = client_for(
+        {
+            "https://example.test/news": httpx.Response(200, text="<html></html>"),
+            "https://example.test/old-story": httpx.Response(200, text=ALPR, headers={"content-type": "text/html"}),
+        }
+    )
+    registry = load_registry(
+        copy_config(
+            tmp_path,
+            [
+                {
+                    "id": "marietta-news",
+                    "collector": "generic_html",
+                    "entity": "marietta-pd",
+                    "url": "https://example.test/news",
+                    "cadence": "daily",
+                    "selectors": {"item": "a", "title": "a", "link": "a"},
+                }
+            ],
+        )
+    )
+    execute(
+        registry,
+        store,
+        http=http,
+        classifier=QuoteClassifier(),
+        today=TODAY,
+        ignore_cadence=True,
+        send_email=True,
+        sync_notion=False,
+        lookback_days=40,
+        mailer=lambda subject, body, recipient: sent.append(subject),
+    )
+    output = capsys.readouterr().out
+    assert "prefilter_hits: 1" in output
+    assert "source marietta-news: fetched 0, in_window 0, hits 1" in output
+    assert store.conn.execute("SELECT COUNT(*) AS n FROM signals").fetchone()["n"] == 1
+    assert sent and "Backfill: last 40 days" in sent[0]
+    execute(
+        registry,
+        store,
+        http=http,
+        classifier=QuoteClassifier(),
+        today=TODAY,
+        ignore_cadence=True,
+        send_email=True,
+        sync_notion=False,
+        lookback_days=40,
+        mailer=lambda subject, body, recipient: sent.append(subject),
+    )
+    assert store.conn.execute("SELECT COUNT(*) AS n FROM signals").fetchone()["n"] == 1
+    store.close()
+    http.close()
+
+
 def test_legiscan_collector_raises_without_key(monkeypatch):
     monkeypatch.delenv("LEGISCAN_API_KEY", raising=False)
     with pytest.raises(MissingKeyError) as caught:

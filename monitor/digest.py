@@ -32,6 +32,7 @@ def render_digest(
     today: date,
     weekly: bool = False,
     recent_signals: list[dict[str, Any]] | None = None,
+    lookback_days: int | None = None,
 ) -> tuple[str, str] | None:
     """Return (subject, body) when at least one signal scores 40 or higher."""
     visible = [signal for signal in signals if (signal.get("score") or 0) >= 20]
@@ -92,6 +93,8 @@ def render_digest(
         f"RUN HEALTH\n{sources_checked} sources checked, {len(failed)} failed ({detail})"
     )
     subject = f"ALPR signals: {len(act)} act now, {len(watch)} watch ({today.isoformat()})"
+    if lookback_days:
+        subject = f"{subject} Backfill: last {lookback_days} days"
     return subject, "\n".join(sections).strip() + "\n"
 
 

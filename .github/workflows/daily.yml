@@ -15,6 +15,10 @@ on:
         description: Run the live Haiku 10-passage classifier test
         type: boolean
         default: false
+      lookback_days:
+        description: Backfill window in days. Empty keeps the normal 14/90 rule.
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -72,6 +76,7 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
           DIGEST_TO: ${{ secrets.DIGEST_TO }}
+          ALPR_LOOKBACK_DAYS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.lookback_days || '' }}
         run: python -m monitor.run --db data/monitor.sqlite
 
       - name: Commit the updated database

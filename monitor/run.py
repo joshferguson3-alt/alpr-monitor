@@ -72,11 +72,28 @@ def cadence_due(source: dict, today: date) -> bool:
     return True
 
 
-def window_for(store: Store, source_id: str, today: date) -> tuple[date, date]:
-    # First successful documents for a source use 90 days. Later runs use 14.
+def window_for(
+    store: Store,
+    source_id: str,
+    today: date,
+    lookback_days: int | None = None,
+) -> tuple[date, date]:
     # until extends 14 days ahead so an agenda posted for an upcoming meeting is included.
+    # A backfill lookback replaces the 14/90 rule for every source.
+    if lookback_days is not None:
+        return today - timedelta(days=int(lookback_days)), today + timedelta(days=14)
     lookback = 90 if store.source_document_count(source_id) == 0 else 14
     return today - timedelta(days=lookback), today + timedelta(days=14)
+
+
+def _published_in_window(published_at: str | None, since: date, until: date) -> bool:
+    if not published_at:
+        return True
+    try:
+        day = date.fromisoformat(str(published_at)[:10])
+    except ValueError:
+        return True
+    return since <= day <= until
 
 
 def _is_expected_skip(exc: BaseException) -> bool:
@@ -200,6 +217,30 @@ def _build_signal(result: dict, meta: dict, registry: Registry, store: Store, to
     return signal, subject, stance_changed
 
 
+def _refetch_text(http: HttpClient, url: str) -> str:
+    from bs4 import BeautifulSoup
+
+    from monitor.pdftext import extract_pdf_text
+
+    response = http.get(url)
+    content_type = response.headers.get("content-type", "")
+    if "pdf" in content_type or response.content[:4] == b"%PDF" or url.lower().endswith(".pdf"):
+        return extract_pdf_text(response.content)
+    return BeautifulSoup(response.text, "html.parser").get_text("\n", strip=True)
+
+
+def _remember_signal(store: Store, signal: dict) -> int | None:
+    """Insert a signal unless this document already has the same type, quote, and summary."""
+    if store.has_signal(
+        signal["document_id"],
+        signal["signal_type"],
+        signal.get("quote"),
+        signal["summary"],
+    ):
+        return None
+    return store.insert_signal(signal)
+
+
 def execute(
     registry: Registry,
     store: Store,
@@ -213,6 +254,7 @@ def execute(
     send_email: bool = True,
     sync_notion: bool = True,
     mailer=None,
+    lookback_days: int | None = None,
 ) -> int:
     today = today or datetime.now(ZoneInfo("America/New_York")).date()
     run_id = store.start_run()
@@ -243,7 +285,7 @@ def execute(
 
     def handle_source(source: dict) -> list:
         collector = COLLECTORS[source["collector"]]
-        since, until = window_for(store, source["id"], today)
+        since, until = window_for(store, source["id"], today, lookback_days)
         if source["collector"] == "flock_transparency":
             previous = store.latest_snapshot(source["id"])
             source["_previous_snapshot"] = previous["data"] if previous else None
@@ -254,6 +296,9 @@ def execute(
             store.insert_snapshot(source["id"], source["_new_snapshot"])
         return found
 
+    source_stats: dict[str, dict[str, int]] = {
+        source["id"]: {"fetched": 0, "in_window": 0, "hits": 0} for source in due
+    }
     youtube_sources = []
     for source in due:
         if source.get("enabled") is False:
@@ -266,6 +311,11 @@ def execute(
         try:
             found = handle_source(source)
             docs_fetched += len(found)
+            since, until = window_for(store, source["id"], today, lookback_days)
+            source_stats[source["id"]]["fetched"] = len(found)
+            source_stats[source["id"]]["in_window"] = sum(
+                1 for doc in found if _published_in_window(getattr(doc, "published_at", None), since, until)
+            )
             for doc in found:
                 stored = _store_document(store, doc)
                 if stored:
@@ -273,6 +323,26 @@ def execute(
                     new_docs.append(stored)
         except Exception as exc:
             _record_source_result(source["id"], exc, errors, skipped)
+
+    if lookback_days is not None:
+        already = {doc["id"] for doc in new_docs}
+        for source in due:
+            if source.get("enabled") is False or source["collector"] == "youtube":
+                continue
+            since, until = window_for(store, source["id"], today, lookback_days)
+            for row in store.documents_without_signals(source["id"], since, until):
+                if row["id"] in already:
+                    continue
+                try:
+                    text = _refetch_text(http, row["url"])
+                except Exception as exc:
+                    _record_source_result(source["id"], exc, errors, skipped)
+                    continue
+                restored = dict(row)
+                restored["text"] = text
+                restored["entity"] = source.get("entity")
+                new_docs.append(restored)
+                already.add(row["id"])
 
     passages: list[dict] = []
     passed_agendas: list[dict] = []
@@ -282,6 +352,8 @@ def execute(
             continue
         store.mark_prefilter(doc["id"], True)
         doc["passed_prefilter"] = 1
+        if doc.get("source_id") in source_stats:
+            source_stats[doc["source_id"]]["hits"] += 1
         if doc.get("doc_type") in {"agenda", "minutes", "packet"}:
             passed_agendas.append(doc)
         agency = registry.agencies_by_id.get(doc.get("entity") or "")
@@ -329,7 +401,9 @@ def execute(
         if not result.get("is_relevant"):
             continue
         signal, subject, stance_changed = _build_signal(result, meta, registry, store, today)
-        signal_id = store.insert_signal(signal)
+        signal_id = _remember_signal(store, signal)
+        if signal_id is None:
+            continue
         signal["id"] = signal_id
         signal["created_at"] = utcnow()
         created_ids.append(signal_id)
@@ -353,8 +427,9 @@ def execute(
             shift["tier"] = tier
             shift.pop("id", None)
             shift.pop("created_at", None)
-            shift_id = store.insert_signal(shift)
-            created_ids.append(shift_id)
+            shift_id = _remember_signal(store, shift)
+            if shift_id is not None:
+                created_ids.append(shift_id)
 
     # Meeting video: captions only when a keyword-passing agenda matches.
     known_agendas = list(passed_agendas)
@@ -370,9 +445,13 @@ def execute(
     youtube = COLLECTORS["youtube"]
     for source in youtube_sources:
         try:
-            since, until = window_for(store, source["id"], today)
+            since, until = window_for(store, source["id"], today, lookback_days)
             videos = youtube.list_videos(source, since=since, until=until, http=http)
             docs_fetched += len(videos)
+            source_stats[source["id"]]["fetched"] = len(videos)
+            source_stats[source["id"]]["in_window"] = sum(
+                1 for video in videos if _published_in_window(video.published_at, since, until)
+            )
             for video in videos:
                 video.entity = source.get("entity")
                 if not _video_matches(video, known_agendas):
@@ -390,6 +469,7 @@ def execute(
                 if not hits:
                     continue
                 store.mark_prefilter(stored["id"], True)
+                source_stats[source["id"]]["hits"] += 1
                 agency = registry.agencies_by_id.get(stored.get("entity") or "")
                 extra = []
                 for passage in extract_passages(stored.get("text") or "", hits):
@@ -411,7 +491,9 @@ def execute(
                         "entity": stored.get("entity"),
                     }
                     signal, subject, stance_changed = _build_signal(result, meta, registry, store, today)
-                    signal_id = store.insert_signal(signal)
+                    signal_id = _remember_signal(store, signal)
+                    if signal_id is None:
+                        continue
                     created_ids.append(signal_id)
                     if subject and signal.get("stance"):
                         store.insert_stance(subject[0], subject[1], signal["stance"], signal_id)
@@ -453,6 +535,7 @@ def execute(
             today=today,
             weekly=weekly,
             recent_signals=recent,
+            lookback_days=lookback_days,
         )
         if rendered:
             subject, body = rendered
@@ -484,6 +567,12 @@ def execute(
     print(f"docs_new: {len(new_docs)}")
     print(f"passages_classified: {len(passages)}")
     print(f"signals_created: {len(created_ids)}")
+    prefilter_hits = sum(item["hits"] for item in source_stats.values())
+    print(f"prefilter_hits: {prefilter_hits}")
+    for source_id, item in source_stats.items():
+        print(
+            f"source {source_id}: fetched {item['fetched']}, in_window {item['in_window']}, hits {item['hits']}"
+        )
     print(f"skipped: {len(skipped)}")
     for item in skipped:
         print(f"skipped {item['source_id']}: {item['message']}")
@@ -542,7 +631,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-email", action="store_true")
     parser.add_argument("--no-notion", action="store_true")
     parser.add_argument("--now", default=None, help="YYYY-MM-DD override, used by tests")
+    parser.add_argument("--lookback-days", type=int, default=None, help="Backfill window. Replaces the 14/90 rule.")
     args = parser.parse_args(argv)
+    lookback_days = args.lookback_days
+    if lookback_days is None:
+        raw_lookback = os.environ.get("ALPR_LOOKBACK_DAYS", "").strip()
+        if raw_lookback:
+            lookback_days = int(raw_lookback)
 
     if not args.dry_run and scheduled_hour_blocks():
         hour = datetime.now(ZoneInfo("America/New_York")).hour
@@ -569,6 +664,7 @@ def main(argv: list[str] | None = None) -> int:
             send_email=not args.no_email and not args.dry_run,
             sync_notion=not args.no_notion and not args.dry_run,
             notion=notion,
+            lookback_days=lookback_days,
         )
     finally:
         store.close()

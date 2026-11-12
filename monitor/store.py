@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -128,6 +128,40 @@ class Store:
         )
         self.conn.commit()
         return int(cur.lastrowid)
+
+    def has_signal(self, document_id: int, signal_type: str, quote: str | None, summary: str) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT 1 FROM signals
+            WHERE document_id = ? AND signal_type = ? AND ifnull(quote, '') = ? AND summary = ?
+            """,
+            (document_id, signal_type, quote or "", summary),
+        ).fetchone()
+        return row is not None
+
+    def documents_without_signals(self, source_id: str, since: date, until: date) -> list[sqlite3.Row]:
+        return list(
+            self.conn.execute(
+                """
+                SELECT d.* FROM documents d
+                WHERE d.source_id = ?
+                  AND NOT EXISTS (SELECT 1 FROM signals s WHERE s.document_id = d.id)
+                  AND (
+                    (
+                      d.published_at IS NOT NULL AND d.published_at != ''
+                      AND date(d.published_at) >= date(?)
+                      AND date(d.published_at) <= date(?)
+                    )
+                    OR (
+                      (d.published_at IS NULL OR d.published_at = '')
+                      AND date(d.fetched_at) >= date(?)
+                      AND date(d.fetched_at) <= date(?)
+                    )
+                  )
+                """,
+                (source_id, since.isoformat(), until.isoformat(), since.isoformat(), until.isoformat()),
+            )
+        )
 
     def mark_prefilter(self, document_id: int, passed: bool) -> None:
         self.conn.execute(

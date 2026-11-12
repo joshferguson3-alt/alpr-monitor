@@ -58,7 +58,8 @@ These sources are not collected, because the site disallows automated access, bl
 
 - Brookhaven PrimeGov (`robots.txt` disallows every path). Council agendas have to be opened by hand.
 - Johns Creek Granicus (`User-agent: *` / `Disallow: /`). The archive is [ViewPublisher.php?view_id=1](https://johnscreekga.granicus.com/ViewPublisher.php?view_id=1).
-- Roswell WordPress uploads (`/wp-content/uploads/` is disallowed). Agendas are taken from IQM2 instead.
+- Roswell IQM2 (`https://roswellcityga.iqm2.com/Citizens/Default.aspx`) timed out from GitHub Actions after 60 seconds and one retry. Agendas are a manual check. WordPress uploads on roswellgov.com are also disallowed.
+- Tennessee attorney general opinions (`https://www.tn.gov/attorneygeneral/opinions.html`) return HTTP 403. The courts site answers with a browser challenge, so that page is not collected.
 - Flock transparency portal (`https://transparency.flocksafety.com/`) returned HTTP 403. No agency in this list had a working public portal URL.
 - Google News search RSS is not used. `news.google.com/robots.txt` is `Disallow: /` and does not allow `/rss`.
 - YouTube channel feeds are not collected. `youtube.com/robots.txt` disallows `/feeds/videos.xml`.

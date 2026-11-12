@@ -11,9 +11,10 @@ from monitor.constants import MODEL_ID, SIGNAL_TYPES, STANCE_TARGETS, STANCES
 SYSTEM_PROMPT = """You extract structured facts about automated license plate readers (ALPR) and
 police surveillance cameras from public government and news text.
 Return one JSON object and nothing else. Use only what the passage states.
-If a field is not stated, use null. Never guess names, dates, or amounts.
-If the passage is not about ALPR or police surveillance cameras, return
-{"is_relevant": false}."""
+If a field is not stated, use an empty string, "none", -1, or an empty list.
+Never guess names, dates, or amounts.
+If the passage is not about ALPR or police surveillance cameras, set
+is_relevant to false and use those empty values for every other field."""
 
 USER_TEMPLATE = """Source type: {doc_type}
 Source title: {title}
@@ -29,59 +30,48 @@ Return JSON with these fields:
 is_relevant        boolean
 signal_type        one of: contract_event, budget_event, policy_event,
                    legislation_event, stance_statement, public_sentiment,
-                   incident, vendor_move, leadership_change, funding_event
+                   incident, vendor_move, leadership_change, funding_event, none
 summary            one sentence, at most 40 words
-agency_name        the law enforcement agency concerned, or null
-vendors            list of vendor names mentioned
-speaker_name       the official or spokesperson speaking, or null.
-                   For private residents use null.
-speaker_role       title and body, or "resident" for public comment
-organization       organization the speaker represents, or null
-stance             one of: supports, opposes, conditional, neutral, unclear
+agency_name        the law enforcement agency concerned, or ""
+vendors            list of vendor names mentioned, or []
+speaker_name       the official or spokesperson speaking, or "".
+                   For private residents use "".
+speaker_role       title and body, "resident" for public comment, or ""
+organization       organization the speaker represents, or ""
+stance             one of: supports, opposes, conditional, neutral, unclear, none
 stance_target      one of: alpr_generally, incumbent_vendor, specific_vendor,
-                   specific_policy
-resident_counts    {{"support": n, "oppose": n}} for public comment, else null
-key_date           ISO date of the vote, deadline, hearing, or contract end
-key_date_meaning   short label for key_date
-dollar_amount      number or null
-camera_count       number or null
-bill_id            bill number if any
+                   specific_policy, none
+resident_counts    {{"support": n, "oppose": n}} for public comment.
+                   Use -1 for both when there is no public comment.
+key_date           ISO date of the vote, deadline, hearing, or contract end, or ""
+key_date_meaning   short label for key_date, or ""
+dollar_amount      number, or -1 when no amount is stated
+camera_count       number, or -1 when no count is stated
+bill_id            bill number if any, or ""
 quote              the single most informative sentence, copied exactly,
-                   at most 300 characters
+                   at most 300 characters, or ""
 confidence         0.0 to 1.0
 
-If the passage is not relevant, set is_relevant to false and set every other field to null.
+If the passage is not relevant, set is_relevant to false and use the empty
+sentinels above. Do not use null.
 """
-
-def _nullable_enum(values: tuple[str, ...]) -> dict[str, Any]:
-    """Anthropic rejects type:[string, null] combined with enum.
-
-    A nullable enum has to be anyOf a string enum and a null type.
-    """
-    return {
-        "anyOf": [
-            {"type": "string", "enum": list(values)},
-            {"type": "null"},
-        ]
-    }
-
 
 SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
         "is_relevant": {"type": "boolean"},
-        "signal_type": _nullable_enum(SIGNAL_TYPES),
-        "summary": {"type": ["string", "null"]},
-        "agency_name": {"type": ["string", "null"]},
-        "vendors": {"type": ["array", "null"], "items": {"type": "string"}},
-        "speaker_name": {"type": ["string", "null"]},
-        "speaker_role": {"type": ["string", "null"]},
-        "organization": {"type": ["string", "null"]},
-        "stance": _nullable_enum(STANCES),
-        "stance_target": _nullable_enum(STANCE_TARGETS),
+        "signal_type": {"type": "string", "enum": [*SIGNAL_TYPES, "none"]},
+        "summary": {"type": "string"},
+        "agency_name": {"type": "string"},
+        "vendors": {"type": "array", "items": {"type": "string"}},
+        "speaker_name": {"type": "string"},
+        "speaker_role": {"type": "string"},
+        "organization": {"type": "string"},
+        "stance": {"type": "string", "enum": [*STANCES, "none"]},
+        "stance_target": {"type": "string", "enum": [*STANCE_TARGETS, "none"]},
         "resident_counts": {
-            "type": ["object", "null"],
+            "type": "object",
             "additionalProperties": False,
             "properties": {
                 "support": {"type": "integer"},
@@ -89,13 +79,13 @@ SCHEMA: dict[str, Any] = {
             },
             "required": ["support", "oppose"],
         },
-        "key_date": {"type": ["string", "null"]},
-        "key_date_meaning": {"type": ["string", "null"]},
-        "dollar_amount": {"type": ["number", "null"]},
-        "camera_count": {"type": ["integer", "null"]},
-        "bill_id": {"type": ["string", "null"]},
-        "quote": {"type": ["string", "null"]},
-        "confidence": {"type": ["number", "null"]},
+        "key_date": {"type": "string"},
+        "key_date_meaning": {"type": "string"},
+        "dollar_amount": {"type": "number"},
+        "camera_count": {"type": "integer"},
+        "bill_id": {"type": "string"},
+        "quote": {"type": "string"},
+        "confidence": {"type": "number"},
     },
     "required": [
         "is_relevant",
@@ -140,6 +130,61 @@ def _text_from_response(response: Any) -> str:
     return "\n".join(parts).strip()
 
 
+def _blank_to_none(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in {"", "none", "null"}:
+        return None
+    return value
+
+
+def normalize_sentinels(data: dict[str, Any]) -> dict[str, Any]:
+    """Turn empty-string, "none", -1, and empty-list sentinels back into None."""
+    for key in (
+        "summary",
+        "agency_name",
+        "speaker_name",
+        "speaker_role",
+        "organization",
+        "key_date",
+        "key_date_meaning",
+        "bill_id",
+        "quote",
+        "signal_type",
+        "stance",
+        "stance_target",
+    ):
+        if key in data:
+            data[key] = _blank_to_none(data.get(key))
+    vendors = data.get("vendors")
+    if not vendors:
+        data["vendors"] = None
+    else:
+        data["vendors"] = [item for item in vendors if _blank_to_none(item)]
+        if not data["vendors"]:
+            data["vendors"] = None
+    counts = data.get("resident_counts")
+    if not isinstance(counts, dict):
+        data["resident_counts"] = None
+    else:
+        support = counts.get("support", -1)
+        oppose = counts.get("oppose", -1)
+        if (support is None or support < 0) and (oppose is None or oppose < 0):
+            data["resident_counts"] = None
+        else:
+            data["resident_counts"] = {
+                "support": 0 if support is None or support < 0 else support,
+                "oppose": 0 if oppose is None or oppose < 0 else oppose,
+            }
+    for key in ("dollar_amount", "camera_count"):
+        value = data.get(key)
+        if value is None or value < 0:
+            data[key] = None
+    if data.get("confidence") is None:
+        data["confidence"] = 0
+    return data
+
+
 def parse_model_json(raw: str) -> dict[str, Any]:
     text = raw.strip()
     if text.startswith("```"):
@@ -148,7 +193,7 @@ def parse_model_json(raw: str) -> dict[str, Any]:
     data = json.loads(text)
     if not isinstance(data, dict) or "is_relevant" not in data:
         raise ValueError("classifier JSON missing is_relevant")
-    return data
+    return normalize_sentinels(data)
 
 
 def _normalize_space(value: str) -> str:
@@ -178,6 +223,7 @@ def apply_privacy(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def finalize(result: dict[str, Any], passage: str) -> dict[str, Any]:
+    result = normalize_sentinels(dict(result))
     result = apply_privacy(result)
     result.setdefault("needs_review", 0)
     if result.get("is_relevant"):

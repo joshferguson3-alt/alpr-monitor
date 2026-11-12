@@ -1098,32 +1098,73 @@ def test_missing_notion_database_ids_still_send_the_digest(tmp_path, monkeypatch
     store.close()
 
 
-def test_nullable_enums_are_anyof_not_type_array():
-    from monitor.classify import SCHEMA
+def test_schema_unions_stay_under_the_limit_and_sentinels_normalize():
+    from monitor.classify import SCHEMA, normalize_sentinels
 
-    problems = []
+    enum_problems = []
 
-    def walk(node, path):
+    def count_unions(node) -> int:
+        total = 0
         if isinstance(node, dict):
             declared = node.get("type")
+            if isinstance(declared, list) and len(declared) > 1:
+                total += 1
             if "enum" in node and isinstance(declared, list):
-                problems.append(path)
-            for key, value in node.items():
-                walk(value, f"{path}.{key}")
+                enum_problems.append(declared)
+            if "anyOf" in node or "oneOf" in node:
+                total += 1
+            for value in node.values():
+                total += count_unions(value)
         elif isinstance(node, list):
-            for index, value in enumerate(node):
-                walk(value, f"{path}[{index}]")
+            for value in node:
+                total += count_unions(value)
+        return total
 
-    walk(SCHEMA, "schema")
-    assert problems == []
-    for name in ("signal_type", "stance", "stance_target"):
-        field = SCHEMA["properties"][name]
-        branches = field["anyOf"]
-        assert any(branch.get("type") == "null" for branch in branches)
-        enums = [branch["enum"] for branch in branches if "enum" in branch]
-        assert enums and enums[0]
-        assert all(isinstance(item, str) for item in enums[0])
-        assert None not in enums[0]
+    unions = count_unions(SCHEMA)
+    assert enum_problems == []
+    assert unions <= 12
+    assert unions <= 8
+    cleaned = normalize_sentinels(
+        {
+            "is_relevant": False,
+            "signal_type": "none",
+            "summary": "",
+            "agency_name": "null",
+            "vendors": [],
+            "speaker_name": "",
+            "speaker_role": "none",
+            "organization": "",
+            "stance": "none",
+            "stance_target": "none",
+            "resident_counts": {"support": -1, "oppose": -1},
+            "key_date": "",
+            "key_date_meaning": "",
+            "dollar_amount": -1,
+            "camera_count": -1,
+            "bill_id": "",
+            "quote": "",
+            "confidence": 0,
+        }
+    )
+    assert cleaned["signal_type"] is None
+    assert cleaned["dollar_amount"] is None
+    assert cleaned["camera_count"] is None
+    assert cleaned["vendors"] is None
+    assert cleaned["resident_counts"] is None
+    assert cleaned["quote"] is None
+    kept = normalize_sentinels(
+        {
+            "dollar_amount": 0,
+            "camera_count": 12,
+            "resident_counts": {"support": 1, "oppose": 6},
+            "vendors": ["Flock Safety"],
+            "signal_type": "contract_event",
+        }
+    )
+    assert kept["dollar_amount"] == 0
+    assert kept["camera_count"] == 12
+    assert kept["resident_counts"] == {"support": 1, "oppose": 6}
+    assert kept["signal_type"] == "contract_event"
 
 
 def test_channel_id_is_exactly_24_characters():

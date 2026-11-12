@@ -23,8 +23,9 @@ COURTS = {
 
 class CourtListenerCollector:
     def collect(self, source: dict, *, since: date, until: date, http: HttpClient) -> list[RawDocument]:
-        token = os.environ.get("COURTLISTENER_TOKEN")
+        token = (os.environ.get("COURTLISTENER_TOKEN") or "").strip()
         if not token:
+            # Logged by the runner as a skip. An empty secret must not call the API.
             raise MissingKeyError("COURTLISTENER_TOKEN")
         query = source.get("query") or '"license plate reader" OR ALPR OR "Flock Safety"'
         url = (

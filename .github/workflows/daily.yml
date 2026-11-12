@@ -23,6 +23,8 @@ on:
 permissions:
   contents: write
 
+# Schedule and workflow_dispatch share one queue. A second run waits
+# instead of pushing the signal database over the first run's commit.
 concurrency:
   group: alpr-daily
   cancel-in-progress: false
@@ -52,6 +54,12 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          # A queued run must start from the branch tip, not the SHA that
+          # triggered it. Otherwise it rebuilds the signal database from
+          # before the run it waited on.
+          ref: main
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -105,5 +113,39 @@ jobs:
             echo "No database change"
           else
             git commit -m "Daily signal database update"
-            git push
+            branch="${GITHUB_REF_NAME:-main}"
+            attempt=1
+            while [ "$attempt" -le 3 ]; do
+              git rebase --abort >/dev/null 2>&1 || true
+              if git pull --rebase origin "$branch"; then
+                if git push origin "HEAD:${branch}"; then
+                  echo "pushed database on attempt ${attempt}"
+                  exit 0
+                fi
+                echo "push rejected, retry ${attempt}"
+              elif [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
+                echo "rebase conflict on attempt ${attempt}, keeping this run's database"
+                git checkout --theirs -- data/monitor.sqlite
+                git add data/monitor.sqlite
+                if git diff --name-only --diff-filter=U | grep -q .; then
+                  echo "unresolved conflict outside data/monitor.sqlite"
+                  git rebase --abort || true
+                  exit 1
+                fi
+                GIT_EDITOR=true git rebase --continue
+                if git push origin "HEAD:${branch}"; then
+                  echo "pushed database on attempt ${attempt}"
+                  exit 0
+                fi
+                echo "push rejected after rebase, retry ${attempt}"
+              else
+                echo "git pull --rebase failed, retry ${attempt}"
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                exit 1
+              fi
+              attempt=$((attempt + 1))
+              sleep $((attempt * 2))
+            done
+            exit 1
           fi

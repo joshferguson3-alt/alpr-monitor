@@ -483,6 +483,59 @@ def test_six_agencies_and_a_broken_url(tmp_path):
     http.close()
 
 
+def test_missing_courtlistener_token_is_skipped(tmp_path, monkeypatch, capsys):
+    from monitor.collectors.courtlistener import CourtListenerCollector
+
+    monkeypatch.setenv("COURTLISTENER_TOKEN", "   ")
+    with pytest.raises(MissingKeyError) as caught:
+        CourtListenerCollector().collect(
+            {"id": "court-opinions"}, since=TODAY, until=TODAY, http=client_for({})
+        )
+    assert "missing key, skipped (COURTLISTENER_TOKEN)" in str(caught.value)
+    monkeypatch.delenv("COURTLISTENER_TOKEN", raising=False)
+    http = client_for(
+        {
+            "/kept": httpx.Response(
+                200,
+                text="<a href='https://example.test/kept-item'>Flock Safety license plate reader</a>",
+            )
+        }
+    )
+    registry = load_registry(
+        copy_config(
+            tmp_path,
+            [
+                {"id": "court-opinions", "collector": "courtlistener", "cadence": "weekly"},
+                {
+                    "id": "kept-news",
+                    "collector": "generic_html",
+                    "url": "https://example.test/kept",
+                    "cadence": "daily",
+                    "selectors": {"item": "a", "title": "a", "link": "a"},
+                },
+            ],
+        )
+    )
+    store = Store(tmp_path / "m.sqlite")
+    code = execute(
+        registry,
+        store,
+        http=http,
+        today=TODAY,
+        ignore_cadence=True,
+        send_email=False,
+        sync_notion=False,
+    )
+    output = capsys.readouterr().out
+    errors = json.loads(store.conn.execute("SELECT errors FROM runs").fetchone()["errors"])
+    assert code == 0
+    assert not any(err["source_id"] == "court-opinions" for err in errors)
+    assert "skipped court-opinions:" in output
+    assert "missing key, skipped (COURTLISTENER_TOKEN)" in output
+    assert store.conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
+    store.close()
+
+
 def test_missing_legiscan_key_is_skipped(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("LEGISCAN_API_KEY", raising=False)
     http = client_for({})

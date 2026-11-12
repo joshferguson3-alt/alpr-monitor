@@ -28,7 +28,9 @@ _MONTHS = {
 
 class Iqm2Collector:
     def collect(self, source: dict, *, since: date, until: date, http: HttpClient) -> list[RawDocument]:
-        response = http.get(source["url"])
+        timeout = source.get("timeout")
+        retries = source.get("retries")
+        response = http.get(source["url"], timeout=timeout, retries=retries)
         soup = BeautifulSoup(response.text, "html.parser")
         bodies = {name.lower() for name in source.get("bodies") or []}
         documents: list[RawDocument] = []
@@ -61,7 +63,7 @@ class Iqm2Collector:
             if agenda is None:
                 continue
             url = urljoin(source["url"], agenda["href"])
-            body = http.get(url)
+            body = http.get(url, timeout=timeout, retries=retries)
             content_type = body.headers.get("content-type", "")
             if "pdf" in content_type or body.content[:4] == b"%PDF":
                 text = extract_pdf_text(body.content)

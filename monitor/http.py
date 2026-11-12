@@ -44,29 +44,57 @@ class HttpClient:
     def close(self) -> None:
         self._client.close()
 
-    def get(self, url: str, *, headers: dict[str, str] | None = None) -> httpx.Response:
+    def get(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout: float | None = None,
+        retries: int | None = None,
+    ) -> httpx.Response:
         self._ensure_allowed(url)
-        return self._request("GET", url, headers=headers)
+        return self._request("GET", url, headers=headers, timeout=timeout, retries=retries)
 
-    def post(self, url: str, *, data: dict | None = None, headers: dict[str, str] | None = None) -> httpx.Response:
+    def post(
+        self,
+        url: str,
+        *,
+        data: dict | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float | None = None,
+        retries: int | None = None,
+    ) -> httpx.Response:
         self._ensure_allowed(url)
-        return self._request("POST", url, data=data, headers=headers)
+        return self._request("POST", url, data=data, headers=headers, timeout=timeout, retries=retries)
 
-    def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        data: dict | None = None,
+        timeout: float | None = None,
+        retries: int | None = None,
+    ) -> httpx.Response:
         host = urlparse(url).netloc
         delay = max(self.min_delay, self._crawl_delay.get(host, 0))
+        attempts = self.retries if retries is None else retries
+        request_timeout = self.timeout if timeout is None else timeout
         last_error: Exception | None = None
-        for attempt in range(self.retries + 1):
+        for attempt in range(attempts + 1):
             self._wait(host, delay)
             try:
-                response = self._client.request(method, url, **kwargs)
+                response = self._client.request(
+                    method, url, headers=headers, data=data, timeout=request_timeout
+                )
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = exc
-                if attempt >= self.retries:
+                if attempt >= attempts:
                     raise
                 self._sleep(min(2 ** attempt, 4))
                 continue
-            if response.status_code in {429, 500, 502, 503, 504} and attempt < self.retries:
+            if response.status_code in {429, 500, 502, 503, 504} and attempt < attempts:
                 last_error = httpx.HTTPStatusError(
                     f"HTTP {response.status_code}", request=response.request, response=response
                 )

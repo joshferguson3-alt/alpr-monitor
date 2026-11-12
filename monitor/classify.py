@@ -53,20 +53,33 @@ confidence         0.0 to 1.0
 If the passage is not relevant, set is_relevant to false and set every other field to null.
 """
 
+def _nullable_enum(values: tuple[str, ...]) -> dict[str, Any]:
+    """Anthropic rejects type:[string, null] combined with enum.
+
+    A nullable enum has to be anyOf a string enum and a null type.
+    """
+    return {
+        "anyOf": [
+            {"type": "string", "enum": list(values)},
+            {"type": "null"},
+        ]
+    }
+
+
 SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
         "is_relevant": {"type": "boolean"},
-        "signal_type": {"type": ["string", "null"], "enum": [*SIGNAL_TYPES, None]},
+        "signal_type": _nullable_enum(SIGNAL_TYPES),
         "summary": {"type": ["string", "null"]},
         "agency_name": {"type": ["string", "null"]},
         "vendors": {"type": ["array", "null"], "items": {"type": "string"}},
         "speaker_name": {"type": ["string", "null"]},
         "speaker_role": {"type": ["string", "null"]},
         "organization": {"type": ["string", "null"]},
-        "stance": {"type": ["string", "null"], "enum": [*STANCES, None]},
-        "stance_target": {"type": ["string", "null"], "enum": [*STANCE_TARGETS, None]},
+        "stance": _nullable_enum(STANCES),
+        "stance_target": _nullable_enum(STANCE_TARGETS),
         "resident_counts": {
             "type": ["object", "null"],
             "additionalProperties": False,

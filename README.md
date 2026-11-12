@@ -60,7 +60,10 @@ These sources are not collected, because the site disallows automated access, bl
 - Johns Creek Granicus (`User-agent: *` / `Disallow: /`). The archive is [ViewPublisher.php?view_id=1](https://johnscreekga.granicus.com/ViewPublisher.php?view_id=1).
 - Roswell WordPress uploads (`/wp-content/uploads/` is disallowed). Agendas are taken from IQM2 instead.
 - Flock transparency portal (`https://transparency.flocksafety.com/`) returned HTTP 403. No agency in this list had a working public portal URL.
-- Google News search RSS is not used. Google's terms do not allow automated access. News comes from the outlet feeds in `config/sources.yaml` (Rough Draft Atlanta, Georgia Recorder, Police1, EFF, and the others listed there).
+- Google News search RSS is not used. `news.google.com/robots.txt` is `Disallow: /` and does not allow `/rss`.
+- YouTube channel feeds are not collected. `youtube.com/robots.txt` disallows `/feeds/videos.xml`.
+- Axon news is not collected. `axon.com` returns HTTP 403 to this client and does not publish a working RSS feed.
+- Police1 is `https://www.police1.com/index.rss`. Flock has no RSS; the blog listing at `https://www.flocksafety.com/blog` is collected instead.
 - CivicPlus RSS feeds are disallowed by those sites' `robots.txt`. Agenda Center HTML is used instead.
 - Dunwoody and Smyrna city sites returned HTTP 403 to this client. Smyrna was not needed after Roswell replaced Cobb County PD. Dunwoody meetings are read from OnBase, which did not publish a `robots.txt`.
 

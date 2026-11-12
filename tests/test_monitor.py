@@ -361,7 +361,7 @@ def test_privacy_drops_resident_names():
     assert "Jane Resident" not in (result.get("summary") or "")
 
 
-def test_primegov_robots_skip_does_not_stop_the_run(tmp_path):
+def test_primegov_robots_skip_does_not_stop_the_run(tmp_path, capsys):
     http = client_for(
         {
             "https://blocked.test/robots.txt": httpx.Response(200, text=(FIXTURES / "primegov_robots.txt").read_text()),
@@ -405,7 +405,10 @@ def test_primegov_robots_skip_does_not_stop_the_run(tmp_path):
         sync_notion=False,
     )
     errors = json.loads(store.conn.execute("SELECT errors FROM runs ORDER BY id DESC LIMIT 1").fetchone()["errors"])
-    assert any("brookhaven-meetings" in err["source_id"] and "robots" in err["message"] for err in errors)
+    assert not any("brookhaven-meetings" == err["source_id"] for err in errors)
+    captured = capsys.readouterr().out
+    assert "skipped brookhaven-meetings:" in captured
+    assert "robots" in captured
     assert store.conn.execute("SELECT COUNT(*) AS n FROM documents").fetchone()["n"] >= 1
     store.close()
     http.close()
@@ -480,7 +483,7 @@ def test_six_agencies_and_a_broken_url(tmp_path):
     http.close()
 
 
-def test_missing_legiscan_key_is_skipped(tmp_path, monkeypatch):
+def test_missing_legiscan_key_is_skipped(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("LEGISCAN_API_KEY", raising=False)
     http = client_for({})
     registry = load_registry(
@@ -492,7 +495,10 @@ def test_missing_legiscan_key_is_skipped(tmp_path, monkeypatch):
     store = Store(tmp_path / "m.sqlite")
     execute(registry, store, http=http, today=TODAY, ignore_cadence=True, send_email=False, sync_notion=False)
     errors = json.loads(store.conn.execute("SELECT errors FROM runs").fetchone()["errors"])
-    assert any("missing key, skipped" in err["message"] for err in errors)
+    output = capsys.readouterr().out
+    assert not any(err["source_id"] == "ga-bills" for err in errors)
+    assert "skipped ga-bills:" in output
+    assert "missing key, skipped" in output
     store.close()
 
 
@@ -1089,6 +1095,107 @@ def test_missing_notion_database_ids_still_send_the_digest(tmp_path, monkeypatch
     errors = json.loads(store.conn.execute("SELECT errors FROM runs").fetchone()["errors"])
     assert any("Notion sync skipped" in err["message"] for err in errors)
     assert sent == ["josh.ferguson3@gmail.com"]
+    store.close()
+
+
+def test_nullable_enums_are_anyof_not_type_array():
+    from monitor.classify import SCHEMA
+
+    problems = []
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            declared = node.get("type")
+            if "enum" in node and isinstance(declared, list):
+                problems.append(path)
+            for key, value in node.items():
+                walk(value, f"{path}.{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, f"{path}[{index}]")
+
+    walk(SCHEMA, "schema")
+    assert problems == []
+    for name in ("signal_type", "stance", "stance_target"):
+        field = SCHEMA["properties"][name]
+        branches = field["anyOf"]
+        assert any(branch.get("type") == "null" for branch in branches)
+        enums = [branch["enum"] for branch in branches if "enum" in branch]
+        assert enums and enums[0]
+        assert all(isinstance(item, str) for item in enums[0])
+        assert None not in enums[0]
+
+
+def test_channel_id_is_exactly_24_characters():
+    from monitor.collectors.youtube import CHANNEL_ID_RE
+
+    long_token = "UC" + ("a" * 40)
+    exact = "UCabcdefghijklmnopqrstuv"
+    assert len(exact) == 24
+    assert CHANNEL_ID_RE.search(long_token) is None
+    assert CHANNEL_ID_RE.search(f"channel {exact} tail").group(1) == exact
+
+
+def test_iqm2_passes_longer_timeout_and_one_retry():
+    html = (FIXTURES / "roswell_iqm2_rows.html").read_text(encoding="utf-8")
+
+    class Response:
+        def __init__(self, text, content_type="text/html"):
+            self.text = text
+            self.content = text.encode()
+            self.headers = {"content-type": content_type}
+
+    class RecordingHttp:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, timeout=None, retries=None, headers=None):
+            self.calls.append((url, timeout, retries))
+            if "FileOpen" in url:
+                return Response("Agenda", "text/plain")
+            return Response(html)
+
+    http = RecordingHttp()
+    Iqm2Collector().collect(
+        {
+            "id": "roswell-meetings",
+            "url": "https://roswellcityga.iqm2.com/Citizens/Default.aspx",
+            "timeout": 60,
+            "retries": 1,
+            "max_docs": 1,
+        },
+        since=date(2026, 11, 1),
+        until=date(2026, 11, 30),
+        http=http,
+    )
+    assert http.calls
+    assert all(timeout == 60 and retries == 1 for _url, timeout, retries in http.calls)
+
+
+def test_disabled_source_is_skipped_not_an_error(tmp_path, capsys):
+    registry = load_registry(
+        copy_config(
+            tmp_path,
+            [
+                {
+                    "id": "axon-news",
+                    "collector": "rss",
+                    "entity": "axon",
+                    "url": "https://www.axon.com/newsroom/rss",
+                    "cadence": "daily",
+                    "enabled": False,
+                    "skip_reason": "disabled, skipped (axon.com returns HTTP 403)",
+                }
+            ],
+        )
+    )
+    store = Store(tmp_path / "m.sqlite")
+    execute(registry, store, http=client_for({}), today=TODAY, ignore_cadence=True, send_email=False, sync_notion=False)
+    errors = json.loads(store.conn.execute("SELECT errors FROM runs").fetchone()["errors"])
+    output = capsys.readouterr().out
+    assert errors == []
+    assert "skipped axon-news:" in output
+    assert "disabled, skipped" in output
     store.close()
 
 

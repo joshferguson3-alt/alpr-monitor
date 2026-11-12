@@ -82,12 +82,16 @@ class YouTubeCollector:
         return document
 
 
+# Channel ids are UC plus 22 characters. A longer match is not an id.
+CHANNEL_ID_RE = re.compile(r"(?<![A-Za-z0-9_-])(UC[A-Za-z0-9_-]{22})(?![A-Za-z0-9_-])")
+
+
 def _channel_id(url: str, http: HttpClient) -> str | None:
-    match = re.search(r"(UC[A-Za-z0-9_-]{20,})", url)
+    match = CHANNEL_ID_RE.search(url)
     if match:
         return match.group(1)
     if not url:
         return None
     page = http.get(url).text
-    found = re.search(r"(UC[A-Za-z0-9_-]{20,})", page)
+    found = CHANNEL_ID_RE.search(page)
     return found.group(1) if found else None

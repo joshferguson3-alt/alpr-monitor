@@ -57,6 +57,9 @@
   url: https://roswellcityga.iqm2.com/Citizens/Default.aspx
   cadence: daily
   doc_type: agenda
+  # The listing page exceeded the default 20s timeout on the first live run.
+  timeout: 60
+  retries: 1
   bodies:
     - Mayor and Council
 
@@ -73,6 +76,9 @@
   url: https://www.youtube.com/CityofRoswell
   cadence: daily
   doc_type: transcript
+  # youtube.com/robots.txt Disallow: /feeds/videos.xml for User-agent: *.
+  enabled: false
+  skip_reason: "disabled, skipped (youtube.com/robots.txt Disallow: /feeds/videos.xml)"
 
 - id: johns-creek-youtube
   collector: youtube
@@ -80,6 +86,8 @@
   url: https://www.youtube.com/johnscreekgagov
   cadence: daily
   doc_type: transcript
+  enabled: false
+  skip_reason: "disabled, skipped (youtube.com/robots.txt Disallow: /feeds/videos.xml)"
 
 - id: ga-bills
   collector: legiscan
@@ -168,7 +176,8 @@
 - id: police1-news
   collector: rss
   entity: police1
-  url: https://www.police1.com/law-enforcement-products/police-technology/rss/
+  # Advertised on the homepage as rel=alternate. robots.txt allows it (crawl-delay 10).
+  url: https://www.police1.com/index.rss
   cadence: daily
   doc_type: news
 
@@ -180,11 +189,17 @@
   doc_type: news
 
 - id: flock-news
-  collector: rss
+  collector: generic_html
   entity: flock-safety
-  url: https://www.flocksafety.com/blog/rss.xml
+  # No public RSS. The blog listing is allowed (robots.txt only blocks filter paths).
+  url: https://www.flocksafety.com/blog
   cadence: daily
   doc_type: press
+  follow: false
+  selectors:
+    item: "div.cs_card-wr"
+    title: "h3"
+    link: "a.blog-link"
 
 - id: axon-news
   collector: rss
@@ -192,3 +207,7 @@
   url: https://www.axon.com/newsroom/rss
   cadence: daily
   doc_type: press
+  # axon.com returns HTTP 403 to this client. news.google.com/robots.txt
+  # Disallow: / and does not allow /rss, so a Google News query is not a fallback.
+  enabled: false
+  skip_reason: "disabled, skipped (axon.com returns HTTP 403; no public RSS, and news.google.com/robots.txt disallows /rss)"

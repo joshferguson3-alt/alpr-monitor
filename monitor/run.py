@@ -22,10 +22,11 @@ from monitor.collectors.legistar import LegistarCollector
 from monitor.collectors.openstates import OpenStatesCollector
 from monitor.collectors.primegov import PrimeGovCollector
 from monitor.collectors.rss import RssCollector
+from monitor.collectors.base import MissingKeyError
 from monitor.collectors.youtube import YouTubeCollector
 from monitor.constants import PASSAGE_CAP
 from monitor.digest import deliver, render_digest
-from monitor.http import HttpClient
+from monitor.http import HttpClient, RobotsDenied
 from monitor.notion_sync import NotionSync, client_from_env, is_object_not_found
 from monitor.passages import extract_passages
 from monitor.prefilter import passes
@@ -76,6 +77,20 @@ def window_for(store: Store, source_id: str, today: date) -> tuple[date, date]:
     # until extends 14 days ahead so an agenda posted for an upcoming meeting is included.
     lookback = 90 if store.source_document_count(source_id) == 0 else 14
     return today - timedelta(days=lookback), today + timedelta(days=14)
+
+
+def _is_expected_skip(exc: BaseException) -> bool:
+    return isinstance(exc, (RobotsDenied, MissingKeyError))
+
+
+def _record_source_result(source_id: str, exc: BaseException, errors: list, skipped: list) -> None:
+    message = safe_message(exc)
+    if _is_expected_skip(exc):
+        if "skipped" not in message:
+            message = f"skipped: {message}"
+        skipped.append({"source_id": source_id, "message": message})
+        return
+    errors.append({"source_id": source_id, "message": message})
 
 
 def _hash(text: str) -> str:
@@ -217,6 +232,7 @@ def execute(
 
     http = http or HttpClient()
     errors: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
     docs_fetched = 0
     new_docs: list[dict] = []
     due = [
@@ -240,6 +256,10 @@ def execute(
 
     youtube_sources = []
     for source in due:
+        if source.get("enabled") is False:
+            reason = source.get("skip_reason") or "disabled, skipped"
+            skipped.append({"source_id": source["id"], "message": reason})
+            continue
         if source["collector"] == "youtube":
             youtube_sources.append(source)
             continue
@@ -252,7 +272,7 @@ def execute(
                     stored["entity"] = source.get("entity")
                     new_docs.append(stored)
         except Exception as exc:
-            errors.append({"source_id": source["id"], "message": safe_message(exc)})
+            _record_source_result(source["id"], exc, errors, skipped)
 
     passages: list[dict] = []
     passed_agendas: list[dict] = []
@@ -396,7 +416,7 @@ def execute(
                     if subject and signal.get("stance"):
                         store.insert_stance(subject[0], subject[1], signal["stance"], signal_id)
         except Exception as exc:
-            errors.append({"source_id": source["id"], "message": safe_message(exc)})
+            _record_source_result(source["id"], exc, errors, skipped)
 
     signals = [dict(row) for row in store.signals_created_since(started)]
     for signal in signals:
@@ -464,6 +484,9 @@ def execute(
     print(f"docs_new: {len(new_docs)}")
     print(f"passages_classified: {len(passages)}")
     print(f"signals_created: {len(created_ids)}")
+    print(f"skipped: {len(skipped)}")
+    for item in skipped:
+        print(f"skipped {item['source_id']}: {item['message']}")
     print(f"errors: {len(errors)}")
     for error in errors:
         print(f"error {error['source_id']}: {error['message']}")

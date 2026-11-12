@@ -6,7 +6,9 @@ import argparse
 import hashlib
 import os
 import re
+import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -24,7 +26,7 @@ from monitor.collectors.primegov import PrimeGovCollector
 from monitor.collectors.rss import RssCollector
 from monitor.collectors.base import MissingKeyError
 from monitor.collectors.youtube import YouTubeCollector
-from monitor.constants import PASSAGE_CAP
+from monitor.constants import CLASSIFY_DOC_CAP, CLASSIFY_WORKERS, PASSAGE_CAP, RUN_BUDGET_SECONDS
 from monitor.digest import deliver, render_digest
 from monitor.http import HttpClient, RobotsDenied
 from monitor.notion_sync import NotionSync, client_from_env, is_object_not_found
@@ -255,6 +257,8 @@ def execute(
     sync_notion: bool = True,
     mailer=None,
     lookback_days: int | None = None,
+    publish: bool = True,
+    classify_limit: int | None = None,
 ) -> int:
     today = today or datetime.now(ZoneInfo("America/New_York")).date()
     run_id = store.start_run()
@@ -273,6 +277,8 @@ def execute(
         return 0
 
     http = http or HttpClient()
+    deadline = time.monotonic() + RUN_BUDGET_SECONDS
+    classify_limit = CLASSIFY_DOC_CAP if classify_limit is None else classify_limit
     errors: list[dict[str, str]] = []
     skipped: list[dict[str, str]] = []
     docs_fetched = 0
@@ -301,6 +307,14 @@ def execute(
     }
     youtube_sources = []
     for source in due:
+        if time.monotonic() >= deadline:
+            errors.append(
+                {
+                    "source_id": source["id"],
+                    "message": "run budget reached, collection stopped so publish can run",
+                }
+            )
+            break
         if source.get("enabled") is False:
             reason = source.get("skip_reason") or "disabled, skipped"
             skipped.append({"source_id": source["id"], "message": reason})
@@ -344,21 +358,45 @@ def execute(
                 new_docs.append(restored)
                 already.add(row["id"])
 
-    passages: list[dict] = []
     passed_agendas: list[dict] = []
+    hit_docs: list[dict] = []
     for doc in new_docs:
-        hits = passes(doc.get("text") or "", registry.keywords)
-        if not hits:
+        keyword_hits = passes(doc.get("text") or "", registry.keywords)
+        if not keyword_hits:
+            if doc.get("id"):
+                store.mark_classified(doc["id"])
             continue
         store.mark_prefilter(doc["id"], True)
         doc["passed_prefilter"] = 1
+        doc["_hits"] = keyword_hits
         if doc.get("source_id") in source_stats:
             source_stats[doc["source_id"]]["hits"] += 1
         if doc.get("doc_type") in {"agenda", "minutes", "packet"}:
             passed_agendas.append(doc)
+        hit_docs.append(doc)
+
+    hit_docs.sort(key=lambda doc: doc.get("published_at") or "", reverse=True)
+    to_classify = hit_docs[:classify_limit]
+    deferred = len(hit_docs) - len(to_classify)
+    if deferred:
+        print(f"deferred {deferred} prefilter hits to the next run")
+        errors.append(
+            {
+                "source_id": "classifier",
+                "message": f"classified {len(to_classify)} newest documents, {deferred} left for the next run",
+            }
+        )
+
+    created_ids: list[int] = []
+    passages_classified = 0
+    if to_classify:
+        classifier = classifier or Classifier()
+
+    def classify_document(doc: dict) -> tuple[dict, list[tuple[dict, dict]]]:
         agency = registry.agencies_by_id.get(doc.get("entity") or "")
-        for passage in extract_passages(doc.get("text") or "", hits):
-            passages.append(
+        metas = []
+        for passage in extract_passages(doc.get("text") or "", doc["_hits"])[:PASSAGE_CAP]:
+            metas.append(
                 {
                     "document_id": doc["id"],
                     "source_id": doc["source_id"],
@@ -368,26 +406,10 @@ def execute(
                     "published_at": doc.get("published_at"),
                     "agency_name": agency["name"] if agency else None,
                     "text": passage,
-                    "url": doc.get("url"),
                 }
             )
-
-    passages.sort(key=lambda item: item.get("published_at") or "", reverse=True)
-    if len(passages) > PASSAGE_CAP:
-        overflow = len(passages) - PASSAGE_CAP
-        passages = passages[:PASSAGE_CAP]
-        errors.append(
-            {
-                "source_id": "classifier",
-                "message": f"passage cap of {PASSAGE_CAP} reached, {overflow} newer-first overflow left unclassified",
-            }
-        )
-
-    created_ids: list[int] = []
-    if passages:
-        classifier = classifier or Classifier()
-    for meta in passages:
-        try:
+        classified: list[tuple[dict, dict]] = []
+        for meta in metas:
             result = classifier.classify(
                 passage=meta["text"],
                 doc_type=meta.get("doc_type") or "",
@@ -395,41 +417,62 @@ def execute(
                 published_at=meta.get("published_at"),
                 agency_name=meta.get("agency_name"),
             )
-        except Exception as exc:
-            errors.append({"source_id": meta["source_id"], "message": safe_message(exc)})
-            continue
-        if not result.get("is_relevant"):
-            continue
-        signal, subject, stance_changed = _build_signal(result, meta, registry, store, today)
-        signal_id = _remember_signal(store, signal)
-        if signal_id is None:
-            continue
-        signal["id"] = signal_id
-        signal["created_at"] = utcnow()
-        created_ids.append(signal_id)
-        if subject and signal.get("stance"):
-            store.insert_stance(subject[0], subject[1], signal["stance"], signal_id)
-        if stance_changed:
-            shift = dict(signal)
-            shift["signal_type"] = "stance_statement"
-            shift["summary"] = "Stance shift: " + (signal.get("summary") or "")
-            agency = registry.agencies_by_id.get(shift.get("agency_id") or "")
-            person = registry.people_by_id.get(shift.get("person_id") or "")
-            score, tier = score_signal(
-                shift,
-                agency=agency,
-                person=person,
-                stance_changed=False,
-                today=today,
-                state=(agency or {}).get("state"),
-            )
-            shift["score"] = score
-            shift["tier"] = tier
-            shift.pop("id", None)
-            shift.pop("created_at", None)
-            shift_id = _remember_signal(store, shift)
-            if shift_id is not None:
-                created_ids.append(shift_id)
+            classified.append((meta, result))
+        return doc, classified
+
+    done = 0
+    index = 0
+    while index < len(to_classify) and time.monotonic() < deadline:
+        batch = to_classify[index : index + CLASSIFY_WORKERS]
+        index += len(batch)
+        with ThreadPoolExecutor(max_workers=CLASSIFY_WORKERS) as pool:
+            futures = [pool.submit(classify_document, doc) for doc in batch]
+            for future in futures:
+                try:
+                    doc, classified = future.result()
+                except Exception as exc:
+                    errors.append({"source_id": "classifier", "message": safe_message(exc)})
+                    continue
+                for meta, result in classified:
+                    passages_classified += 1
+                    if not result.get("is_relevant"):
+                        continue
+                    signal, subject, stance_changed = _build_signal(result, meta, registry, store, today)
+                    signal_id = _remember_signal(store, signal)
+                    if signal_id is None:
+                        continue
+                    signal["id"] = signal_id
+                    signal["created_at"] = utcnow()
+                    created_ids.append(signal_id)
+                    if subject and signal.get("stance"):
+                        store.insert_stance(subject[0], subject[1], signal["stance"], signal_id)
+                    if stance_changed:
+                        shift = dict(signal)
+                        shift["signal_type"] = "stance_statement"
+                        shift["summary"] = "Stance shift: " + (signal.get("summary") or "")
+                        agency = registry.agencies_by_id.get(shift.get("agency_id") or "")
+                        person = registry.people_by_id.get(shift.get("person_id") or "")
+                        score, tier = score_signal(
+                            shift,
+                            agency=agency,
+                            person=person,
+                            stance_changed=False,
+                            today=today,
+                            state=(agency or {}).get("state"),
+                        )
+                        shift["score"] = score
+                        shift["tier"] = tier
+                        shift.pop("id", None)
+                        shift.pop("created_at", None)
+                        shift_id = _remember_signal(store, shift)
+                        if shift_id is not None:
+                            created_ids.append(shift_id)
+                store.mark_classified(doc["id"])
+                done += 1
+                if done % 25 == 0 or done == len(to_classify):
+                    print(f"classified {done}/{len(to_classify)} documents")
+    if index < len(to_classify):
+        print(f"run budget reached after {done} documents; remaining hits resume next run")
 
     # Meeting video: captions only when a keyword-passing agenda matches.
     known_agendas = list(passed_agendas)
@@ -506,7 +549,7 @@ def execute(
             import json
             signal["vendors"] = json.loads(signal["vendors"])
 
-    if sync_notion:
+    if publish and sync_notion:
         has_databases = bool(notion and notion.signals_db and notion.agencies_db)
         if not has_databases:
             errors.append(
@@ -518,7 +561,7 @@ def execute(
         else:
             _sync_notion(notion, store, registry, signals, today, errors)
 
-    if send_email:
+    if publish and send_email:
         documents = {}
         for signal in signals:
             document = store.document(signal["document_id"])
@@ -557,7 +600,7 @@ def execute(
         run_id,
         docs_fetched=docs_fetched,
         docs_new=len(new_docs),
-        passages_classified=len(passages),
+        passages_classified=passages_classified,
         signals_created=len(created_ids),
         errors=errors,
     )
@@ -565,7 +608,7 @@ def execute(
     print(f"sources: {len(registry.sources)}")
     print(f"docs_fetched: {docs_fetched}")
     print(f"docs_new: {len(new_docs)}")
-    print(f"passages_classified: {len(passages)}")
+    print(f"passages_classified: {passages_classified}")
     print(f"signals_created: {len(created_ids)}")
     prefilter_hits = sum(item["hits"] for item in source_stats.values())
     print(f"prefilter_hits: {prefilter_hits}")
@@ -622,6 +665,79 @@ def _sync_notion(notion, store, registry, signals, today, errors) -> None:
             errors.append({"source_id": "notion", "message": safe_message(exc)})
 
 
+def publish_only(
+    registry: Registry,
+    store: Store,
+    *,
+    notion: NotionSync | None = None,
+    today: date | None = None,
+    lookback_days: int | None = None,
+    mailer=None,
+    send_email: bool = True,
+    sync_notion: bool = True,
+) -> int:
+    """Publish signals already stored by a collect/classify run, including one that stopped early."""
+    today = today or datetime.now(ZoneInfo("America/New_York")).date()
+    started = store.latest_started_at()
+    signals = [dict(row) for row in store.signals_created_since(started)] if started else []
+    for signal in signals:
+        if isinstance(signal.get("vendors"), str):
+            import json
+            signal["vendors"] = json.loads(signal["vendors"])
+    errors: list[dict[str, str]] = []
+    if sync_notion:
+        has_databases = bool(notion and notion.signals_db and notion.agencies_db)
+        if not has_databases:
+            errors.append(
+                {
+                    "source_id": "notion",
+                    "message": "NOTION_SIGNALS_DB_ID / NOTION_AGENCIES_DB_ID are absent, Notion sync skipped",
+                }
+            )
+        else:
+            _sync_notion(notion, store, registry, signals, today, errors)
+    if send_email:
+        documents = {}
+        for signal in signals:
+            document = store.document(signal["document_id"])
+            if document:
+                documents[signal["document_id"]] = dict(document)
+        rendered = render_digest(
+            signals,
+            documents=documents,
+            agencies=registry.agencies_by_id,
+            run_errors=errors,
+            sources_checked=len(registry.sources),
+            today=today,
+            weekly=today.weekday() == 0,
+            recent_signals=[dict(row) for row in store.recent_signals(90)],
+            lookback_days=lookback_days,
+        )
+        if rendered:
+            subject, body = rendered
+            try:
+                status = deliver(
+                    subject,
+                    body,
+                    smtp_user=os.environ.get("SMTP_USER"),
+                    smtp_password=os.environ.get("SMTP_APP_PASSWORD"),
+                    recipient=os.environ.get("DIGEST_TO"),
+                    sender=mailer,
+                )
+                if status != "sent":
+                    errors.append({"source_id": "digest", "message": status})
+                else:
+                    print(f"digest sent: {subject}")
+            except Exception as exc:
+                errors.append({"source_id": "digest", "message": safe_message(exc)})
+        else:
+            print("digest not sent: no signal scored 40 or higher")
+    for error in errors:
+        print(f"error {error['source_id']}: {error['message']}")
+    print(f"signals_published: {len(signals)}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="ALPR Signal Monitor")
     parser.add_argument("--dry-run", action="store_true")
@@ -632,6 +748,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-notion", action="store_true")
     parser.add_argument("--now", default=None, help="YYYY-MM-DD override, used by tests")
     parser.add_argument("--lookback-days", type=int, default=None, help="Backfill window. Replaces the 14/90 rule.")
+    parser.add_argument("--no-publish", action="store_true", help="Collect and classify only.")
+    parser.add_argument("--publish-only", action="store_true", help="Notion sync and digest for the latest run.")
     args = parser.parse_args(argv)
     lookback_days = args.lookback_days
     if lookback_days is None:
@@ -639,7 +757,7 @@ def main(argv: list[str] | None = None) -> int:
         if raw_lookback:
             lookback_days = int(raw_lookback)
 
-    if not args.dry_run and scheduled_hour_blocks():
+    if not args.dry_run and not args.publish_only and scheduled_hour_blocks():
         hour = datetime.now(ZoneInfo("America/New_York")).hour
         print(f"Scheduled run skipped: America/New_York hour is {hour}, not 6.")
         return 0
@@ -655,6 +773,16 @@ def main(argv: list[str] | None = None) -> int:
         if client is not None:
             notion = NotionSync(client)
     try:
+        if args.publish_only:
+            return publish_only(
+                registry,
+                store,
+                notion=notion,
+                today=today,
+                lookback_days=lookback_days,
+                send_email=not args.no_email,
+                sync_notion=not args.no_notion,
+            )
         return execute(
             registry,
             store,
@@ -665,6 +793,7 @@ def main(argv: list[str] | None = None) -> int:
             sync_notion=not args.no_notion and not args.dry_run,
             notion=notion,
             lookback_days=lookback_days,
+            publish=not args.no_publish,
         )
     finally:
         store.close()

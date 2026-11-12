@@ -710,7 +710,7 @@ def test_stance_shift_signal(tmp_path):
 
         def classify(self, **kwargs):
             self.n += 1
-            stance = "supports" if self.n == 1 else "opposes"
+            stance = "supports" if "reader one" in kwargs["passage"] else "opposes"
             passage = kwargs["passage"]
             from monitor.classify import finalize
 
@@ -1314,6 +1314,92 @@ def test_lookback_reclassifies_stored_documents_without_duplicate_signals(tmp_pa
         mailer=lambda subject, body, recipient: sent.append(subject),
     )
     assert store.conn.execute("SELECT COUNT(*) AS n FROM signals").fetchone()["n"] == 1
+    store.close()
+    http.close()
+
+
+def test_classify_cap_is_newest_first_and_resumes(tmp_path):
+    store = Store(tmp_path / "m.sqlite")
+    store.insert_document(
+        {
+            "source_id": "marietta-news",
+            "url": "https://example.test/older",
+            "content_hash": "older",
+            "title": "Older",
+            "doc_type": "news",
+            "published_at": "2026-10-20",
+        }
+    )
+    store.insert_document(
+        {
+            "source_id": "marietta-news",
+            "url": "https://example.test/newer",
+            "content_hash": "newer",
+            "title": "Newer",
+            "doc_type": "news",
+            "published_at": "2026-11-10",
+        }
+    )
+    http = client_for(
+        {
+            "https://example.test/news": httpx.Response(200, text="<html></html>"),
+            "https://example.test/older": httpx.Response(200, text=ALPR, headers={"content-type": "text/html"}),
+            "https://example.test/newer": httpx.Response(200, text=ALPR, headers={"content-type": "text/html"}),
+        }
+    )
+    registry = load_registry(
+        copy_config(
+            tmp_path,
+            [
+                {
+                    "id": "marietta-news",
+                    "collector": "generic_html",
+                    "entity": "marietta-pd",
+                    "url": "https://example.test/news",
+                    "cadence": "daily",
+                    "selectors": {"item": "a", "title": "a", "link": "a"},
+                }
+            ],
+        )
+    )
+    execute(
+        registry,
+        store,
+        http=http,
+        classifier=QuoteClassifier(),
+        today=TODAY,
+        ignore_cadence=True,
+        send_email=False,
+        sync_notion=False,
+        lookback_days=40,
+        classify_limit=1,
+    )
+    published = [
+        row[0]
+        for row in store.conn.execute(
+            "SELECT d.published_at FROM signals s JOIN documents d ON d.id = s.document_id"
+        )
+    ]
+    assert published == ["2026-11-10"]
+    execute(
+        registry,
+        store,
+        http=http,
+        classifier=QuoteClassifier(),
+        today=TODAY,
+        ignore_cadence=True,
+        send_email=False,
+        sync_notion=False,
+        lookback_days=40,
+        classify_limit=1,
+    )
+    published = [
+        row[0]
+        for row in store.conn.execute(
+            "SELECT d.published_at FROM signals s JOIN documents d ON d.id = s.document_id ORDER BY d.published_at"
+        )
+    ]
+    assert published == ["2026-10-20", "2026-11-10"]
     store.close()
     http.close()
 

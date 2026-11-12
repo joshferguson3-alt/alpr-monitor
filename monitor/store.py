@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS documents (
   doc_type TEXT,
   published_at TEXT,
   fetched_at TEXT NOT NULL,
-  passed_prefilter INTEGER NOT NULL DEFAULT 0
+  passed_prefilter INTEGER NOT NULL DEFAULT 0,
+  classified_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS signals (
@@ -87,7 +88,17 @@ class Store:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(documents)")}
+        if "classified_at" not in columns:
+            self.conn.execute("ALTER TABLE documents ADD COLUMN classified_at TEXT")
+            # Already prefiltered with no hit. Do not refetch them on the next backfill.
+            self.conn.execute(
+                "UPDATE documents SET classified_at = fetched_at WHERE passed_prefilter = 0"
+            )
 
     def close(self) -> None:
         self.conn.close()
@@ -145,6 +156,7 @@ class Store:
                 """
                 SELECT d.* FROM documents d
                 WHERE d.source_id = ?
+                  AND d.classified_at IS NULL
                   AND NOT EXISTS (SELECT 1 FROM signals s WHERE s.document_id = d.id)
                   AND (
                     (
@@ -162,6 +174,19 @@ class Store:
                 (source_id, since.isoformat(), until.isoformat(), since.isoformat(), until.isoformat()),
             )
         )
+
+    def mark_classified(self, document_id: int) -> None:
+        self.conn.execute(
+            "UPDATE documents SET classified_at = ? WHERE id = ?",
+            (utcnow(), document_id),
+        )
+        self.conn.commit()
+
+    def latest_started_at(self) -> str | None:
+        row = self.conn.execute(
+            "SELECT started_at FROM runs WHERE started_at IS NOT NULL ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return row["started_at"] if row else None
 
     def mark_prefilter(self, document_id: int, passed: bool) -> None:
         self.conn.execute(

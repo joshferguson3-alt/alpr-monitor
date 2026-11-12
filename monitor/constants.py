@@ -29,6 +29,10 @@ COVERED_STATES = {"GA", "TN", "AL", "FL", "SC", "NC"}
 DIGEST_RECIPIENT = "josh.ferguson3@gmail.com"
 
 PASSAGE_CAP = 300
+CLASSIFY_DOC_CAP = 150
+CLASSIFY_WORKERS = 4
+# Leave room inside a 45-minute job for the publish step after collection stops.
+RUN_BUDGET_SECONDS = 32 * 60
 HTTP_TIMEOUT = 20.0
 HTTP_RETRIES = 2
 MIN_HOST_DELAY = 2.0

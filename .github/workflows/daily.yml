@@ -49,7 +49,7 @@ jobs:
 
   monitor:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -60,7 +60,8 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Collect, classify, and publish
+      - name: Collect and classify
+        timeout-minutes: 36
         env:
           # workflow_dispatch leaves this unset-as-zero so the 6 AM Eastern gate does not apply.
           ALPR_SCHEDULED: ${{ github.event_name == 'schedule' && '1' || '0' }}
@@ -77,9 +78,25 @@ jobs:
           SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
           DIGEST_TO: ${{ secrets.DIGEST_TO }}
           ALPR_LOOKBACK_DAYS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.lookback_days || '' }}
-        run: python -m monitor.run --db data/monitor.sqlite
+        run: python -m monitor.run --db data/monitor.sqlite --no-publish
+
+      - name: Publish Notion and digest
+        if: always() && !cancelled()
+        env:
+          ALPR_SCHEDULED: "0"
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_PARENT_PAGE_ID: ${{ secrets.NOTION_PARENT_PAGE_ID }}
+          NOTION_SIGNALS_DB_ID: ${{ secrets.NOTION_SIGNALS_DB_ID }}
+          NOTION_AGENCIES_DB_ID: ${{ secrets.NOTION_AGENCIES_DB_ID }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
+          DIGEST_TO: ${{ secrets.DIGEST_TO }}
+          ALPR_LOOKBACK_DAYS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.lookback_days || '' }}
+        run: python -m monitor.run --db data/monitor.sqlite --publish-only
 
       - name: Commit the updated database
+        if: always() && !cancelled()
         run: |
           git config user.name "alpr-monitor"
           git config user.email "actions@github.com"

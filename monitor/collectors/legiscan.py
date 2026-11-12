@@ -14,7 +14,7 @@ from urllib.parse import quote
 from monitor.collectors.base import MissingKeyError, RawDocument
 from monitor.http import HttpClient
 
-QUERIES = ("\"license plate\"", "ALPR", "\"Flock Safety\"")
+QUERIES = ("license plate reader OR ALPR",)
 
 
 class LegiScanCollector:
@@ -25,7 +25,8 @@ class LegiScanCollector:
         state = source["state"]
         seen: set[int] = set()
         documents: list[RawDocument] = []
-        for query in QUERIES:
+        queries = (source["query"],) if source.get("query") else QUERIES
+        for query in queries:
             search_url = (
                 "https://api.legiscan.com/?key="
                 + quote(key)
@@ -35,9 +36,11 @@ class LegiScanCollector:
             if data.get("status") != "OK":
                 continue
             results = data.get("searchresult") or {}
-            for item_key, item in results.items():
-                if item_key == "summary" or not isinstance(item, dict):
-                    continue
+            if isinstance(results, list):
+                items = [item for item in results if isinstance(item, dict)]
+            else:
+                items = [item for key_name, item in results.items() if key_name != "summary" and isinstance(item, dict)]
+            for item in items:
                 bill_id = item.get("bill_id")
                 if not bill_id or bill_id in seen:
                     continue
@@ -47,17 +50,12 @@ class LegiScanCollector:
                 ).json()
                 bill = (detail.get("bill") or {}) if detail.get("status") == "OK" else {}
                 text = _bill_text(bill, item)
-                change = item.get("last_action_date") or item.get("status_date") or ""
-                published = change[:10] if change else None
-                if published:
-                    try:
-                        stamp = date.fromisoformat(published)
-                    except ValueError:
-                        stamp = None
-                    if stamp and (stamp < since or stamp > until):
-                        # Still keep bills whose last action is recent; LegiScan
-                        # dates are the action date. Drop clearly stale ones.
-                        continue
+                last_action = item.get("last_action")
+                last_action_date = last_action.get("date") if isinstance(last_action, dict) else None
+                change = item.get("last_action_date") or item.get("status_date") or last_action_date or ""
+                published = str(change)[:10] if change else None
+                # year=2 is already the current session. Do not drop a match
+                # because its last action is older than this run's window.
                 url_out = item.get("url") or bill.get("url") or f"https://legiscan.com/{state}/bill/{item.get('bill_number')}"
                 documents.append(
                     RawDocument(

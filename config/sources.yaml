@@ -92,17 +92,27 @@
 - id: ga-bills
   collector: legiscan
   state: GA
+  query: license plate reader OR ALPR
   cadence: daily
   doc_type: bill
 
 - id: tn-bills
   collector: legiscan
   state: TN
+  query: license plate reader OR ALPR
+  cadence: daily
+  doc_type: bill
+
+- id: us-bills
+  collector: legiscan
+  state: US
+  query: license plate reader OR ALPR
   cadence: daily
   doc_type: bill
 
 - id: congress-bills
   collector: congress
+  query: license plate reader
   cadence: weekly
   doc_type: bill
 
@@ -204,6 +214,48 @@
     item: "div.cs_card-wr"
     title: "h3"
     link: "a.blog-link"
+
+- id: dekalb-commission
+  collector: legistar
+  client: dekalbcountyga
+  url: https://dekalbcountyga.legistar.com/Calendar.aspx
+  cadence: daily
+  doc_type: agenda
+
+- id: four-oh-four-media
+  collector: rss
+  entity: four-oh-four-media
+  url: https://www.404media.co/rss/
+  cadence: daily
+  doc_type: news
+
+- id: the-markup
+  collector: rss
+  entity: the-markup
+  url: https://themarkup.org/feeds/rss.xml
+  cadence: daily
+  doc_type: news
+
+- id: statescoop
+  collector: rss
+  entity: statescoop
+  url: https://statescoop.com/feed/
+  cadence: daily
+  doc_type: news
+
+- id: govtech
+  collector: rss
+  entity: govtech
+  url: https://www.govtech.com/index.rss
+  cadence: daily
+  doc_type: news
+
+- id: route-fifty
+  collector: rss
+  entity: route-fifty
+  url: https://www.route-fifty.com/rss/all/
+  cadence: daily
+  doc_type: news
 
 - id: axon-news
   collector: rss

@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS documents (
   published_at TEXT,
   fetched_at TEXT NOT NULL,
   passed_prefilter INTEGER NOT NULL DEFAULT 0,
-  classified_at TEXT
+  classified_at TEXT,
+  text TEXT
 );
 
 CREATE TABLE IF NOT EXISTS signals (
@@ -99,6 +100,8 @@ class Store:
             self.conn.execute(
                 "UPDATE documents SET classified_at = fetched_at WHERE passed_prefilter = 0"
             )
+        if "text" not in columns:
+            self.conn.execute("ALTER TABLE documents ADD COLUMN text TEXT")
 
     def close(self) -> None:
         self.conn.close()
@@ -123,8 +126,8 @@ class Store:
         cur = self.conn.execute(
             """
             INSERT INTO documents
-              (source_id, url, content_hash, title, doc_type, published_at, fetched_at, passed_prefilter)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              (source_id, url, content_hash, title, doc_type, published_at, fetched_at, passed_prefilter, text)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 doc["source_id"],
@@ -135,10 +138,98 @@ class Store:
                 doc.get("published_at"),
                 doc.get("fetched_at") or utcnow(),
                 int(doc.get("passed_prefilter") or 0),
+                (doc.get("text") or "")[:200_000] or None,
             ),
         )
         self.conn.commit()
         return int(cur.lastrowid)
+
+    def fill_text_if_empty(self, url: str, text: str) -> sqlite3.Row | None:
+        """Keep RSS text for a URL we already stored, so a later run need not refetch the article."""
+        if not text:
+            return None
+        row = self.conn.execute("SELECT * FROM documents WHERE url = ?", (url,)).fetchone()
+        if row is None:
+            return None
+        if not row["text"]:
+            self.conn.execute(
+                "UPDATE documents SET text = ? WHERE id = ?",
+                (text[:200_000], row["id"]),
+            )
+            self.conn.commit()
+            row = self.conn.execute("SELECT * FROM documents WHERE id = ?", (row["id"],)).fetchone()
+        return row
+
+    def signals_missing_notion_page(self) -> list[sqlite3.Row]:
+        return list(
+            self.conn.execute(
+                """
+                SELECT * FROM signals
+                WHERE notion_page_id IS NULL OR notion_page_id = ''
+                ORDER BY id
+                """
+            )
+        )
+
+    def prior_stance(
+        self,
+        subject_type: str,
+        subject_id: str,
+        document_id: int,
+        published_at: str | None,
+    ) -> str | None:
+        """Latest stance for this subject on a different, earlier document.
+
+        A dated document is earlier when its published_at is before this one.
+        An undated document is earlier only when it was stored first (smaller id).
+        """
+        if published_at:
+            row = self.conn.execute(
+                """
+                SELECT st.stance
+                FROM stances st
+                JOIN signals s ON s.id = st.signal_id
+                LEFT JOIN documents d ON d.id = s.document_id
+                WHERE st.subject_type = ?
+                  AND st.subject_id = ?
+                  AND s.document_id != ?
+                  AND ifnull(s.summary, '') NOT LIKE 'Stance shift:%'
+                  AND (
+                    (d.published_at IS NOT NULL AND d.published_at < ?)
+                    OR (d.published_at IS NOT NULL AND d.published_at = ? AND s.document_id < ?)
+                    OR (d.published_at IS NULL AND s.document_id < ?)
+                  )
+                ORDER BY coalesce(d.published_at, '') DESC, s.document_id DESC, s.id DESC
+                LIMIT 1
+                """,
+                (
+                    subject_type,
+                    subject_id,
+                    document_id,
+                    published_at,
+                    published_at,
+                    document_id,
+                    document_id,
+                ),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                """
+                SELECT st.stance
+                FROM stances st
+                JOIN signals s ON s.id = st.signal_id
+                WHERE st.subject_type = ?
+                  AND st.subject_id = ?
+                  AND s.document_id IS NOT NULL
+                  AND s.document_id != ?
+                  AND s.document_id < ?
+                  AND ifnull(s.summary, '') NOT LIKE 'Stance shift:%'
+                ORDER BY s.document_id DESC, s.id DESC
+                LIMIT 1
+                """,
+                (subject_type, subject_id, document_id, document_id),
+            ).fetchone()
+        return row["stance"] if row else None
 
     def has_signal(self, document_id: int, signal_type: str, quote: str | None, summary: str) -> bool:
         row = self.conn.execute(

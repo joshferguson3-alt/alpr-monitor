@@ -32,9 +32,14 @@ class RssCollector:
                 continue
             title = entry.get("title") or source["id"]
             summary = entry.get("summary") or entry.get("description") or ""
+            content = ""
+            if entry.get("content"):
+                content = entry.content[0].get("value") or ""
             from bs4 import BeautifulSoup
 
-            text = BeautifulSoup(f"{title}\n{summary}", "html.parser").get_text("\n", strip=True)
+            text = BeautifulSoup(f"{title}\n{summary}\n{content}", "html.parser").get_text("\n", strip=True)
+            if not text.strip():
+                continue
             documents.append(
                 RawDocument(
                     source_id=source["id"],

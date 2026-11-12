@@ -1404,6 +1404,103 @@ def test_classify_cap_is_newest_first_and_resumes(tmp_path):
     http.close()
 
 
+def test_select_option_strips_commas_and_limits_length():
+    from monitor.notion_sync import sanitize_option
+
+    assert sanitize_option("City of Tempe, Arizona") == "City of Tempe - Arizona"
+    assert sanitize_option("  a ,  b ") == "a - b"
+    assert sanitize_option(None) is None
+    assert len(sanitize_option("x" * 180)) == 100
+
+
+def test_stance_shift_needs_an_earlier_different_document():
+    from monitor.run import _build_signal
+
+    registry = load_registry(ROOT / "config")
+    store = Store(tmp_path := __import__("pathlib").Path("/tmp/stance-shift-test.sqlite"))
+    if store.path.exists():
+        store.close()
+        store.path.unlink()
+        store = Store("/tmp/stance-shift-test.sqlite")
+    first = store.insert_document(
+        {
+            "source_id": "eff-news",
+            "url": "https://example.test/earlier",
+            "content_hash": "earlier",
+            "title": "Earlier",
+            "doc_type": "news",
+            "published_at": "2026-01-01",
+        }
+    )
+    same = first
+    later = store.insert_document(
+        {
+            "source_id": "eff-news",
+            "url": "https://example.test/later",
+            "content_hash": "later",
+            "title": "Later",
+            "doc_type": "news",
+            "published_at": "2026-06-01",
+        }
+    )
+    original = store.insert_signal(
+        {
+            "document_id": first,
+            "signal_type": "stance_statement",
+            "summary": "EFF supports the cameras.",
+            "organization_id": "eff",
+            "stance": "supports",
+            "stance_target": "alpr_generally",
+            "quote": "supports",
+            "confidence": 1,
+            "score": 30,
+            "tier": "Background",
+        }
+    )
+    store.insert_stance("organization", "eff", "supports", original)
+    same_doc = {
+        "is_relevant": True,
+        "signal_type": "stance_statement",
+        "summary": "EFF now opposes the cameras.",
+        "organization": "Electronic Frontier Foundation",
+        "stance": "opposes",
+        "stance_target": "alpr_generally",
+        "quote": "opposes",
+        "confidence": 1,
+        "speaker_name": None,
+    }
+    _signal, _subject, changed = _build_signal(
+        same_doc,
+        {"document_id": same, "published_at": "2026-01-01", "text": "", "entity": "eff"},
+        registry,
+        store,
+        TODAY,
+    )
+    assert changed is False
+    _signal, _subject, changed = _build_signal(
+        same_doc,
+        {"document_id": later, "published_at": "2026-06-01", "text": "", "entity": "eff"},
+        registry,
+        store,
+        TODAY,
+    )
+    assert changed is True
+    anonymous = dict(same_doc)
+    anonymous["organization"] = None
+    anonymous["speaker_name"] = None
+    _signal, subject, changed = _build_signal(
+        anonymous,
+        {"document_id": later, "published_at": "2026-06-01", "text": "", "entity": "eff"},
+        registry,
+        store,
+        TODAY,
+    )
+    assert subject is None
+    assert changed is False
+    store.close()
+    store.path.unlink(missing_ok=True)
+
+
 def test_legiscan_collector_raises_without_key(monkeypatch):
     monkeypatch.delenv("LEGISCAN_API_KEY", raising=False)
     with pytest.raises(MissingKeyError) as caught:

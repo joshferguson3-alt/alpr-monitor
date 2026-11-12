@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import date
 from typing import Any
 
@@ -79,10 +80,22 @@ def _title(value: str) -> dict:
     return {"title": [{"type": "text", "text": {"content": (value or "Signal")[:1900]}}]}
 
 
-def _select(value: str | None) -> dict | None:
-    if not value:
+def sanitize_option(value: str | None, limit: int = 100) -> str | None:
+    """Notion select names cannot contain commas and must be at most 100 characters."""
+    if value is None:
         return None
-    return {"select": {"name": value}}
+    text = str(value).replace(",", " -")
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return None
+    return text[:limit]
+
+
+def _select(value: str | None) -> dict | None:
+    name = sanitize_option(value)
+    if not name:
+        return None
+    return {"select": {"name": name}}
 
 
 def _date(value: str | None) -> dict | None:
@@ -145,10 +158,8 @@ class NotionSync:
                     properties=properties,
                 )
         except Exception as exc:
-            if is_object_not_found(exc):
-                self.notes.append("Notion returned object_not_found while writing a signal.")
-                return None
-            raise
+            self.notes.append(str(exc)[:500])
+            return None
         return page.get("id")
 
     def upsert_agencies(self, agencies: list[dict], signals: list[dict], today: date) -> None:
@@ -191,10 +202,10 @@ class NotionSync:
                         properties=properties,
                     )
             except Exception as exc:
+                self.notes.append(str(exc)[:500])
                 if is_object_not_found(exc):
-                    self.notes.append("Notion returned object_not_found while writing agencies.")
                     return
-                raise
+                continue
 
     def _signal_properties(self, signal: dict, document: dict, agency: dict | None) -> dict:
         vendors = signal.get("vendors") or []
@@ -228,7 +239,13 @@ class NotionSync:
         elif signal.get("agency_name_raw"):
             properties["Agency"] = _select(signal["agency_name_raw"])
         if vendors:
-            properties["Vendors"] = {"multi_select": [{"name": vendor[:100]} for vendor in vendors]}
+            names = []
+            for vendor in vendors:
+                name = sanitize_option(vendor)
+                if name and name not in names:
+                    names.append(name)
+            if names:
+                properties["Vendors"] = {"multi_select": [{"name": name} for name in names]}
         return {key: value for key, value in properties.items() if value is not None}
 
     def _find_number(self, data_source_id: str, prop: str, value: int) -> str | None:

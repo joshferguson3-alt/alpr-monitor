@@ -19,7 +19,7 @@ class CongressCollector:
         key = os.environ.get("CONGRESS_API_KEY")
         if not key:
             raise MissingKeyError("CONGRESS_API_KEY")
-        query = source.get("query") or '"license plate" OR ALPR OR "Flock Safety"'
+        query = source.get("query") or "license plate reader"
         url = (
             "https://api.congress.gov/v3/bill?query="
             + quote(query)

@@ -174,3 +174,33 @@
   category: media
   state: null
   source_urls: [https://www.police1.com/]
+
+- id: four-oh-four-media
+  name: 404 Media
+  category: media
+  state: null
+  source_urls: [https://www.404media.co/]
+
+- id: the-markup
+  name: The Markup
+  category: media
+  state: null
+  source_urls: [https://themarkup.org/]
+
+- id: statescoop
+  name: StateScoop
+  category: media
+  state: null
+  source_urls: [https://statescoop.com/]
+
+- id: govtech
+  name: Government Technology
+  category: media
+  state: null
+  source_urls: [https://www.govtech.com/]
+
+- id: route-fifty
+  name: Route Fifty
+  category: media
+  state: null
+  source_urls: [https://www.route-fifty.com/]

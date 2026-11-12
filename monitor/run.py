@@ -98,8 +98,12 @@ def _published_in_window(published_at: str | None, since: date, until: date) -> 
     return since <= day <= until
 
 
+class UnusableFetch(RuntimeError):
+    """The article page could not be read and no feed text was available."""
+
+
 def _is_expected_skip(exc: BaseException) -> bool:
-    return isinstance(exc, (RobotsDenied, MissingKeyError))
+    return isinstance(exc, (RobotsDenied, MissingKeyError, UnusableFetch))
 
 
 def _record_source_result(source_id: str, exc: BaseException, errors: list, skipped: list) -> None:
@@ -160,7 +164,8 @@ def _build_signal(result: dict, meta: dict, registry: Registry, store: Store, to
         agency_id = entity
         agency_flag = False
     person_id, person_flag = resolve_person(result.get("speaker_name"), registry)
-    org_id, org_flag = resolve_organization(result.get("organization"), registry)
+    named_org_id, named_org_flag = resolve_organization(result.get("organization"), registry)
+    org_id, org_flag = named_org_id, named_org_flag
     if not org_id and entity in registry.organizations_by_id:
         org_id = entity
         org_flag = False
@@ -198,13 +203,14 @@ def _build_signal(result: dict, meta: dict, registry: Registry, store: Store, to
     person = registry.people_by_id.get(person_id) if person_id else None
     subject = None
     stance_changed = False
+    # A source feed is not the speaker. Stance shifts need a named person or a named organization.
     if signal["stance"] and person_id:
         subject = ("person", person_id)
-    elif signal["stance"] and org_id:
-        subject = ("organization", org_id)
+    elif signal["stance"] and named_org_id and result.get("organization"):
+        subject = ("organization", named_org_id)
     if subject:
-        last = store.last_stance(*subject)
-        stance_changed = last is not None and last != signal["stance"]
+        prior = store.prior_stance(subject[0], subject[1], signal["document_id"], meta.get("published_at"))
+        stance_changed = prior is not None and prior != signal["stance"]
     state = (agency or {}).get("state")
     score, tier = score_signal(
         signal,
@@ -220,11 +226,17 @@ def _build_signal(result: dict, meta: dict, registry: Registry, store: Store, to
 
 
 def _refetch_text(http: HttpClient, url: str) -> str:
+    import httpx
     from bs4 import BeautifulSoup
 
     from monitor.pdftext import extract_pdf_text
 
-    response = http.get(url)
+    try:
+        response = http.get(url)
+    except httpx.HTTPStatusError as exc:
+        if exc.response is not None and exc.response.status_code in {401, 403}:
+            raise UnusableFetch(f"article fetch {exc.response.status_code}, skipped") from exc
+        raise
     content_type = response.headers.get("content-type", "")
     if "pdf" in content_type or response.content[:4] == b"%PDF" or url.lower().endswith(".pdf"):
         return extract_pdf_text(response.content)
@@ -332,9 +344,16 @@ def execute(
             )
             for doc in found:
                 stored = _store_document(store, doc)
-                if stored:
-                    stored["entity"] = source.get("entity")
-                    new_docs.append(stored)
+                payload = doc.as_dict() if hasattr(doc, "as_dict") else dict(doc)
+                if stored is None:
+                    existing = store.fill_text_if_empty(payload.get("url") or "", payload.get("text") or "")
+                    if existing is not None and existing["classified_at"] is None:
+                        restored = dict(existing)
+                        restored["entity"] = source.get("entity")
+                        new_docs.append(restored)
+                    continue
+                stored["entity"] = source.get("entity")
+                new_docs.append(stored)
         except Exception as exc:
             _record_source_result(source["id"], exc, errors, skipped)
 
@@ -347,10 +366,15 @@ def execute(
             for row in store.documents_without_signals(source["id"], since, until):
                 if row["id"] in already:
                     continue
-                try:
-                    text = _refetch_text(http, row["url"])
-                except Exception as exc:
-                    _record_source_result(source["id"], exc, errors, skipped)
+                text = (row["text"] or "").strip()
+                if not text:
+                    try:
+                        text = _refetch_text(http, row["url"])
+                    except Exception as exc:
+                        _record_source_result(source["id"], exc, errors, skipped)
+                        continue
+                if not text.strip():
+                    skipped.append({"source_id": source["id"], "message": "no usable text, skipped"})
                     continue
                 restored = dict(row)
                 restored["text"] = text
@@ -559,7 +583,7 @@ def execute(
                 }
             )
         else:
-            _sync_notion(notion, store, registry, signals, today, errors)
+            _sync_notion(notion, store, registry, _signals_for_notion(store, signals), today, errors)
 
     if publish and send_email:
         documents = {}
@@ -633,9 +657,27 @@ def scheduled_hour_blocks(now: datetime | None = None) -> bool:
     return current.hour != 6
 
 
+def _signals_for_notion(store: Store, fresh: list[dict]) -> list[dict]:
+    """This run's signals plus any older signal that never received a Notion page."""
+    import json
+
+    by_id = {}
+    for signal in fresh:
+        by_id[signal["id"]] = signal
+    for row in store.signals_missing_notion_page():
+        if row["id"] in by_id:
+            continue
+        signal = dict(row)
+        if isinstance(signal.get("vendors"), str):
+            signal["vendors"] = json.loads(signal["vendors"])
+        by_id[signal["id"]] = signal
+    return list(by_id.values())
+
+
 def _sync_notion(notion, store, registry, signals, today, errors) -> None:
-    try:
-        for signal in signals:
+    notion.notes.clear()
+    for signal in signals:
+        try:
             document = store.document(signal["document_id"])
             doc = dict(document) if document else {}
             page_id = notion.upsert_signal(
@@ -645,14 +687,15 @@ def _sync_notion(notion, store, registry, signals, today, errors) -> None:
             )
             if page_id:
                 store.set_notion_page(signal["id"], page_id)
+        except Exception as exc:
+            errors.append({"source_id": "notion", "message": safe_message(exc)})
+    try:
         recent = [dict(row) for row in store.recent_signals(90)]
         for row in recent:
             if isinstance(row.get("vendors"), str):
                 import json
                 row["vendors"] = json.loads(row["vendors"])
         notion.upsert_agencies(registry.agencies, recent, today)
-        for note in notion.notes:
-            errors.append({"source_id": "notion", "message": note})
     except Exception as exc:
         if is_object_not_found(exc):
             errors.append(
@@ -663,6 +706,8 @@ def _sync_notion(notion, store, registry, signals, today, errors) -> None:
             )
         else:
             errors.append({"source_id": "notion", "message": safe_message(exc)})
+    for note in notion.notes:
+        errors.append({"source_id": "notion", "message": note})
 
 
 def publish_only(
@@ -695,7 +740,7 @@ def publish_only(
                 }
             )
         else:
-            _sync_notion(notion, store, registry, signals, today, errors)
+            _sync_notion(notion, store, registry, _signals_for_notion(store, signals), today, errors)
     if send_email:
         documents = {}
         for signal in signals:

@@ -19,6 +19,43 @@ from monitor.notion_sync import AGENCY_PROPERTIES, SIGNAL_PROPERTIES, is_object_
 from monitor.registry import load_registry  # noqa: E402
 
 
+def databases_under_parent(notion, page_id: str) -> dict[str, str]:
+    """Map child database titles to database ids for one parent page."""
+    found: dict[str, str] = {}
+    cursor = None
+    while True:
+        kwargs = {"block_id": page_id, "page_size": 100}
+        if cursor:
+            kwargs["start_cursor"] = cursor
+        response = notion.blocks.children.list(**kwargs)
+        for block in response.get("results") or []:
+            if block.get("type") != "child_database" or not block.get("id"):
+                continue
+            title = ((block.get("child_database") or {}).get("title") or "").strip()
+            if title:
+                found[title] = block["id"]
+        if not response.get("has_more"):
+            return found
+        cursor = response.get("next_cursor")
+        if not cursor:
+            return found
+
+
+def ensure_database(notion, page_id: str, title: str, existing: dict[str, str], properties: dict) -> tuple[str, dict | None]:
+    """Return (database id, created database or None when reused)."""
+    current = existing.get(title)
+    if current:
+        print(f"Reusing existing {title} database.")
+        return current, None
+    created = notion.databases.create(
+        parent={"type": "page_id", "page_id": page_id},
+        title=[{"type": "text", "text": {"content": title}}],
+        initial_data_source={"properties": properties},
+    )
+    print(f"Created {title} database.")
+    return created["id"], created
+
+
 def main() -> int:
     token = os.environ.get("NOTION_TOKEN")
     parent = os.environ.get("NOTION_PARENT_PAGE_ID")
@@ -46,15 +83,10 @@ def main() -> int:
     properties["Vendors"] = {"multi_select": {"options": [{"name": name} for name in vendor_names]}}
     notion = Client(auth=token, notion_version=NOTION_VERSION)
     try:
-        signals = notion.databases.create(
-            parent={"type": "page_id", "page_id": parent},
-            title=[{"type": "text", "text": {"content": "Signals"}}],
-            initial_data_source={"properties": properties},
-        )
-        agencies = notion.databases.create(
-            parent={"type": "page_id", "page_id": parent},
-            title=[{"type": "text", "text": {"content": "Agencies"}}],
-            initial_data_source={"properties": AGENCY_PROPERTIES},
+        existing = databases_under_parent(notion, parent)
+        signals_id, signals_created = ensure_database(notion, parent, "Signals", existing, properties)
+        agencies_id, _agencies_created = ensure_database(
+            notion, parent, "Agencies", existing, AGENCY_PROPERTIES
         )
     except Exception as exc:
         if is_object_not_found(exc):
@@ -65,11 +97,12 @@ def main() -> int:
             return 0
         raise
 
-    signals_id = signals["id"]
-    agencies_id = agencies["id"]
+    print(f"Signals database id: {signals_id}")
+    print(f"Agencies database id: {agencies_id}")
     print(f"NOTION_SIGNALS_DB_ID={signals_id}")
     print(f"NOTION_AGENCIES_DB_ID={agencies_id}")
-    _create_views(notion, signals)
+    if signals_created is not None:
+        _create_views(notion, signals_created)
     return 0
 
 

@@ -404,37 +404,17 @@ def execute(
             import json
             signal["vendors"] = json.loads(signal["vendors"])
 
-    if sync_notion and notion and notion.enabled():
-        try:
-            docs = {}
-            for signal in signals:
-                document = store.document(signal["document_id"])
-                doc = dict(document) if document else {}
-                page_id = notion.upsert_signal(
-                    signal,
-                    doc,
-                    registry.agencies_by_id.get(signal.get("agency_id") or ""),
-                )
-                if page_id:
-                    store.set_notion_page(signal["id"], page_id)
-            recent = [dict(row) for row in store.recent_signals(90)]
-            for row in recent:
-                if isinstance(row.get("vendors"), str):
-                    import json
-                    row["vendors"] = json.loads(row["vendors"])
-            notion.upsert_agencies(registry.agencies, recent, today)
-            for note in notion.notes:
-                errors.append({"source_id": "notion", "message": note})
-        except Exception as exc:
-            if is_object_not_found(exc):
-                errors.append(
-                    {
-                        "source_id": "notion",
-                        "message": "Notion returned object_not_found. The integration may not have access yet.",
-                    }
-                )
-            else:
-                errors.append({"source_id": "notion", "message": safe_message(exc)})
+    if sync_notion:
+        has_databases = bool(notion and notion.signals_db and notion.agencies_db)
+        if not has_databases:
+            errors.append(
+                {
+                    "source_id": "notion",
+                    "message": "NOTION_SIGNALS_DB_ID / NOTION_AGENCIES_DB_ID are absent, Notion sync skipped",
+                }
+            )
+        else:
+            _sync_notion(notion, store, registry, signals, today, errors)
 
     if send_email:
         documents = {}
@@ -490,6 +470,46 @@ def execute(
     return 0
 
 
+def scheduled_hour_blocks(now: datetime | None = None) -> bool:
+    """Scheduled runs wait for 6:00 AM Eastern. workflow_dispatch does not set ALPR_SCHEDULED."""
+    if os.environ.get("ALPR_SCHEDULED") != "1":
+        return False
+    current = now or datetime.now(ZoneInfo("America/New_York"))
+    return current.hour != 6
+
+
+def _sync_notion(notion, store, registry, signals, today, errors) -> None:
+    try:
+        for signal in signals:
+            document = store.document(signal["document_id"])
+            doc = dict(document) if document else {}
+            page_id = notion.upsert_signal(
+                signal,
+                doc,
+                registry.agencies_by_id.get(signal.get("agency_id") or ""),
+            )
+            if page_id:
+                store.set_notion_page(signal["id"], page_id)
+        recent = [dict(row) for row in store.recent_signals(90)]
+        for row in recent:
+            if isinstance(row.get("vendors"), str):
+                import json
+                row["vendors"] = json.loads(row["vendors"])
+        notion.upsert_agencies(registry.agencies, recent, today)
+        for note in notion.notes:
+            errors.append({"source_id": "notion", "message": note})
+    except Exception as exc:
+        if is_object_not_found(exc):
+            errors.append(
+                {
+                    "source_id": "notion",
+                    "message": "Notion returned object_not_found. The integration may not have access yet.",
+                }
+            )
+        else:
+            errors.append({"source_id": "notion", "message": safe_message(exc)})
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="ALPR Signal Monitor")
     parser.add_argument("--dry-run", action="store_true")
@@ -501,11 +521,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--now", default=None, help="YYYY-MM-DD override, used by tests")
     args = parser.parse_args(argv)
 
-    if os.environ.get("ALPR_SCHEDULED") == "1" and not args.dry_run:
+    if not args.dry_run and scheduled_hour_blocks():
         hour = datetime.now(ZoneInfo("America/New_York")).hour
-        if hour != 6:
-            print(f"Scheduled run skipped: America/New_York hour is {hour}, not 6.")
-            return 0
+        print(f"Scheduled run skipped: America/New_York hour is {hour}, not 6.")
+        return 0
+    if not args.dry_run and os.environ.get("ALPR_SCHEDULED") != "1":
+        print("Manual run: 6 AM Eastern gate skipped.")
 
     registry = load_registry(args.config)
     store = Store(args.db)

@@ -20,7 +20,7 @@ pytest
 
 ## Schedule
 
-`.github/workflows/daily.yml` runs at 6:00 AM Eastern. GitHub cron is UTC, so the workflow starts at 10:00 UTC (6:00 AM during daylight time) and 11:00 UTC (6:00 AM during standard time). A scheduled run whose Eastern hour is not 6 exits immediately. `workflow_dispatch` runs the full set of sources by hand.
+`.github/workflows/daily.yml` runs at 6:00 AM Eastern. GitHub cron is UTC, so the workflow starts at 10:00 UTC (6:00 AM during daylight time) and 11:00 UTC (6:00 AM during standard time). A scheduled run whose Eastern hour is not 6 exits immediately. `workflow_dispatch` always collects. Set the `live_tests` input to also run the 10-passage Haiku check. `.github/workflows/setup-notion.yml` creates or reuses the Signals and Agencies databases and prints their IDs.
 
 After a run, the workflow commits `data/monitor.sqlite`.
 

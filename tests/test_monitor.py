@@ -972,6 +972,126 @@ def test_seed_script_does_not_write_config(tmp_path, monkeypatch):
     assert (ROOT / "config" / "people.yaml").read_text(encoding="utf-8") == before
 
 
+def test_setup_reuses_existing_databases_and_can_create():
+    from scripts.setup_notion import databases_under_parent, ensure_database
+
+    class Children:
+        def list(self, block_id, start_cursor=None, page_size=100):
+            assert block_id == "parent-page"
+            if start_cursor is None:
+                return {
+                    "results": [
+                        {
+                            "id": "signals-id",
+                            "type": "child_database",
+                            "child_database": {"title": "Signals"},
+                        }
+                    ],
+                    "has_more": True,
+                    "next_cursor": "page-2",
+                }
+            return {
+                "results": [
+                    {
+                        "id": "agencies-id",
+                        "type": "child_database",
+                        "child_database": {"title": "Agencies"},
+                    },
+                    {"id": "note", "type": "paragraph"},
+                ],
+                "has_more": False,
+            }
+
+    class Blocks:
+        children = Children()
+
+    class Databases:
+        def __init__(self):
+            self.created = []
+
+        def create(self, **kwargs):
+            self.created.append(kwargs["title"][0]["text"]["content"])
+            return {"id": "new-" + kwargs["title"][0]["text"]["content"], "data_sources": []}
+
+    client = type("Client", (), {})()
+    client.blocks = Blocks()
+    client.databases = Databases()
+    found = databases_under_parent(client, "parent-page")
+    assert found == {"Signals": "signals-id", "Agencies": "agencies-id"}
+    reused_id, created = ensure_database(client, "parent-page", "Signals", found, {})
+    assert reused_id == "signals-id"
+    assert created is None
+    assert client.databases.created == []
+    new_id, created = ensure_database(client, "parent-page", "Signals", {}, {"Name": {"title": {}}})
+    assert new_id == "new-Signals"
+    assert created["id"] == "new-Signals"
+    assert client.databases.created == ["Signals"]
+
+
+def test_manual_run_skips_the_six_am_gate(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from monitor.run import scheduled_hour_blocks
+
+    noon = datetime(2026, 11, 12, 12, tzinfo=ZoneInfo("America/New_York"))
+    six = datetime(2026, 11, 12, 6, tzinfo=ZoneInfo("America/New_York"))
+    monkeypatch.setenv("ALPR_SCHEDULED", "0")
+    assert scheduled_hour_blocks(noon) is False
+    monkeypatch.setenv("ALPR_SCHEDULED", "1")
+    assert scheduled_hour_blocks(noon) is True
+    assert scheduled_hour_blocks(six) is False
+
+
+def test_missing_notion_database_ids_still_send_the_digest(tmp_path, monkeypatch):
+    monkeypatch.setenv("DIGEST_TO", "josh.ferguson3@gmail.com")
+    monkeypatch.delenv("NOTION_SIGNALS_DB_ID", raising=False)
+    monkeypatch.delenv("NOTION_AGENCIES_DB_ID", raising=False)
+    sent = []
+    from monitor.notion_sync import NotionSync
+
+    http = client_for(
+        {
+            "news": httpx.Response(
+                200,
+                text='<a href="https://example.test/story">Flock Safety license plate reader contract</a>',
+            )
+        }
+    )
+    registry = load_registry(
+        copy_config(
+            tmp_path,
+            [
+                {
+                    "id": "marietta-news",
+                    "collector": "generic_html",
+                    "entity": "marietta-pd",
+                    "url": "https://example.test/news",
+                    "cadence": "daily",
+                    "selectors": {"item": "a", "title": "a", "link": "a"},
+                }
+            ],
+        )
+    )
+    store = Store(tmp_path / "m.sqlite")
+    execute(
+        registry,
+        store,
+        http=http,
+        classifier=QuoteClassifier(),
+        notion=NotionSync(object(), signals_db="", agencies_db=""),
+        today=TODAY,
+        ignore_cadence=True,
+        send_email=True,
+        sync_notion=True,
+        mailer=lambda subject, body, recipient: sent.append(recipient),
+    )
+    errors = json.loads(store.conn.execute("SELECT errors FROM runs").fetchone()["errors"])
+    assert any("Notion sync skipped" in err["message"] for err in errors)
+    assert sent == ["josh.ferguson3@gmail.com"]
+    store.close()
+
+
 def test_legiscan_collector_raises_without_key(monkeypatch):
     monkeypatch.delenv("LEGISCAN_API_KEY", raising=False)
     with pytest.raises(MissingKeyError) as caught:

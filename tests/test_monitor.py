@@ -166,6 +166,165 @@ def test_prefilter_flock_and_lpr():
     assert passes("A license plate reader contract is on the agenda.", keywords)
 
 
+def test_context_terms_match_agency_agendas_only(tmp_path):
+    keywords = load_registry(ROOT / "config").keywords
+    agenda_text = "The council will consider a public safety technology purchase."
+    assert not passes(agenda_text, keywords)
+    assert passes(agenda_text, keywords, include_context=True)
+    assert any(hit.context and hit.term == "public safety technology" for hit in passes(agenda_text, keywords, include_context=True))
+
+    class Quiet:
+        def classify(self, **kwargs):
+            from monitor.classify import finalize
+
+            return finalize(
+                {"is_relevant": False, "signal_type": "none", "summary": "", "quote": "", "confidence": 0},
+                kwargs["passage"],
+            )
+
+    def page(url: str, label: str) -> str:
+        return f"<a href='{url}'>public safety technology purchase {label}</a>"
+
+    http = client_for(
+        {
+            "/agenda": httpx.Response(200, text=page("https://example.test/council-item", "for the council")),
+            "/city-news": httpx.Response(200, text=page("https://example.test/city-news-item", "for the department")),
+            "/eff-news": httpx.Response(200, text=page("https://example.test/eff-item", "for the newsroom")),
+        }
+    )
+    registry = load_registry(
+        copy_config(
+            tmp_path,
+            [
+                {
+                    "id": "brookhaven-meetings",
+                    "collector": "generic_html",
+                    "entity": "brookhaven-pd",
+                    "url": "https://example.test/agenda",
+                    "cadence": "daily",
+                    "doc_type": "agenda",
+                    "selectors": {"item": "a", "title": "a", "link": "a"},
+                },
+                {
+                    "id": "eff-news",
+                    "collector": "generic_html",
+                    "entity": "eff",
+                    "url": "https://example.test/eff-news",
+                    "cadence": "daily",
+                    "doc_type": "news",
+                    "selectors": {"item": "a", "title": "a", "link": "a"},
+                },
+                {
+                    "id": "agency-news",
+                    "collector": "generic_html",
+                    "entity": "brookhaven-pd",
+                    "url": "https://example.test/city-news",
+                    "cadence": "daily",
+                    "doc_type": "news",
+                    "selectors": {"item": "a", "title": "a", "link": "a"},
+                },
+            ],
+        )
+    )
+    store = Store(tmp_path / "m.sqlite")
+    execute(
+        registry,
+        store,
+        http=http,
+        classifier=Quiet(),
+        today=TODAY,
+        ignore_cadence=True,
+        send_email=False,
+        sync_notion=False,
+    )
+    rows = {row["source_id"]: row["passed_prefilter"] for row in store.conn.execute("SELECT source_id, passed_prefilter FROM documents")}
+    assert rows["brookhaven-meetings"] == 1
+    assert rows["eff-news"] == 0
+    assert rows["agency-news"] == 0
+    store.close()
+
+
+def test_possible_alpr_item_confidence_is_capped():
+    from monitor.classify import finalize
+
+    passage = "The council renewed a camera contract."
+    capped = finalize(
+        {
+            "is_relevant": True,
+            "signal_type": "contract_event",
+            "summary": "Possible ALPR item: the council renewed a camera contract and the product is not named.",
+            "quote": passage,
+            "confidence": 0.9,
+        },
+        passage,
+    )
+    assert capped["confidence"] == 0.5
+    kept = finalize(
+        {
+            "is_relevant": True,
+            "signal_type": "contract_event",
+            "summary": "Possible ALPR item: the council renewed a camera contract and the product is not named.",
+            "quote": passage,
+            "confidence": 0.3,
+        },
+        passage,
+    )
+    assert kept["confidence"] == 0.3
+
+
+def test_reopen_unmatched_documents_keeps_signaled_rows(tmp_path):
+    store = Store(tmp_path / "m.sqlite")
+    unmatched = store.insert_document(
+        {
+            "source_id": "brookhaven-meetings",
+            "url": "https://example.test/unmatched",
+            "content_hash": "unmatched",
+            "title": "Unmatched",
+            "doc_type": "agenda",
+            "passed_prefilter": 0,
+        }
+    )
+    store.mark_classified(unmatched)
+    signaled = store.insert_document(
+        {
+            "source_id": "brookhaven-meetings",
+            "url": "https://example.test/signaled",
+            "content_hash": "signaled",
+            "title": "Signaled",
+            "doc_type": "agenda",
+            "passed_prefilter": 0,
+        }
+    )
+    store.mark_classified(signaled)
+    store.insert_signal(
+        {
+            "document_id": signaled,
+            "signal_type": "contract_event",
+            "summary": "A camera contract was renewed.",
+            "quote": "camera contract",
+            "confidence": 0.4,
+            "score": 10,
+            "tier": "Background",
+        }
+    )
+    other = store.insert_document(
+        {
+            "source_id": "other-meetings",
+            "url": "https://example.test/other",
+            "content_hash": "other",
+            "title": "Other",
+            "doc_type": "agenda",
+            "passed_prefilter": 0,
+        }
+    )
+    store.mark_classified(other)
+    assert store.reopen_unmatched_documents("brookhaven-meetings") == 1
+    assert store.document(unmatched)["classified_at"] is None
+    assert store.document(signaled)["classified_at"] is not None
+    assert store.document(other)["classified_at"] is not None
+    store.close()
+
+
 def test_civicplus_fixture_dedupes_and_yields_a_passage(tmp_path):
     listing = (FIXTURES / "civicplus_listing.html").read_text(encoding="utf-8")
     http = client_for(

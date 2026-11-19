@@ -14,6 +14,7 @@ class Hit:
     end: int
     term: str
     strong: bool
+    context: bool = False
 
 
 def _spans(pattern: str, text: str, flags: int = re.IGNORECASE) -> list[tuple[int, int]]:
@@ -83,8 +84,27 @@ def qualifying_hits(hits: list[Hit]) -> list[Hit]:
     return qualified
 
 
-def passes(text: str, keywords: dict) -> list[Hit]:
-    return qualifying_hits(find_hits(text, keywords))
+def context_hits(text: str, keywords: dict, taken: list[Hit]) -> list[Hit]:
+    """Word-boundary matches of context terms that do not overlap an accepted hit."""
+    if not text:
+        return []
+    occupied = [(hit.start, hit.end) for hit in taken]
+    hits: list[Hit] = []
+    for term in keywords.get("context") or []:
+        for start, end in _spans(r"\b" + re.escape(term) + r"\b", text):
+            if any(start < right and end > left for left, right in occupied):
+                continue
+            hits.append(Hit(start, end, term, False, True))
+            occupied.append((start, end))
+    return hits
+
+
+def passes(text: str, keywords: dict, include_context: bool = False) -> list[Hit]:
+    qualified = qualifying_hits(find_hits(text, keywords))
+    if not include_context:
+        return qualified
+    extra = context_hits(text, keywords, qualified)
+    return sorted(qualified + extra, key=lambda hit: hit.start)
 
 
 def _merge(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:

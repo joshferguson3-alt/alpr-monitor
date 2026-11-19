@@ -262,6 +262,21 @@ class Store:
                 return True
         return False
 
+    def reopen_unmatched_documents(self, source_id: str) -> int:
+        """Let a later backfill reconsider agency documents that never became signals."""
+        cur = self.conn.execute(
+            """
+            UPDATE documents
+            SET classified_at = NULL
+            WHERE source_id = ?
+              AND passed_prefilter = 0
+              AND NOT EXISTS (SELECT 1 FROM signals s WHERE s.document_id = documents.id)
+            """,
+            (source_id,),
+        )
+        self.conn.commit()
+        return int(cur.rowcount)
+
     def documents_without_signals(self, source_id: str, since: date, until: date) -> list[sqlite3.Row]:
         return list(
             self.conn.execute(

@@ -361,6 +361,8 @@ def execute(
             if source.get("enabled") is False or source["collector"] == "youtube":
                 continue
             since, until = window_for(store, source["id"], today, lookback_days)
+            if source.get("entity") in registry.agencies_by_id:
+                store.reopen_unmatched_documents(source["id"])
             for row in store.documents_without_signals(source["id"], since, until):
                 if row["id"] in already:
                     continue
@@ -383,7 +385,11 @@ def execute(
     passed_agendas: list[dict] = []
     hit_docs: list[dict] = []
     for doc in new_docs:
-        keyword_hits = passes(doc.get("text") or "", registry.keywords)
+        include_context = (
+            doc.get("entity") in registry.agencies_by_id
+            and doc.get("doc_type") in {"agenda", "minutes", "packet"}
+        )
+        keyword_hits = passes(doc.get("text") or "", registry.keywords, include_context=include_context)
         if not keyword_hits:
             if doc.get("id"):
                 store.mark_classified(doc["id"])

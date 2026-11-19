@@ -17,7 +17,15 @@ If the passage is not about ALPR or police surveillance cameras, set
 is_relevant to false and use those empty values for every other field.
 Judge relevance against the source title. If the title is about a different
 subject and the ALPR mention is only a related-links list, a sidebar, a
-navigation menu, a footer, or an author bio, set is_relevant to false."""
+navigation menu, a footer, or an author bio, set is_relevant to false.
+Exception for source types agenda, minutes, and packet: a council or commission
+item can concern these systems without naming them. If the item is a police or
+public safety technology, camera, or vendor contract, purchase, renewal, budget
+line, or policy that could plausibly cover license plate readers or police
+cameras, set is_relevant to true, begin the summary with "Possible ALPR item:",
+say what the item covers and that the product is not named, and set confidence
+to 0.5 or lower. Items that are clearly something else, such as body armor,
+vehicles, radios, or software unrelated to cameras, are not relevant."""
 
 USER_TEMPLATE = """Source type: {doc_type}
 Source title: {title}
@@ -227,6 +235,11 @@ def apply_privacy(result: dict[str, Any]) -> dict[str, Any]:
 def finalize(result: dict[str, Any], passage: str) -> dict[str, Any]:
     result = normalize_sentinels(dict(result))
     result = apply_privacy(result)
+    summary = result.get("summary") or ""
+    if summary.startswith("Possible ALPR item:"):
+        confidence = result.get("confidence")
+        if confidence is None or confidence > 0.5:
+            result["confidence"] = 0.5
     result.setdefault("needs_review", 0)
     if result.get("is_relevant"):
         if not quote_is_in_passage(result.get("quote"), passage):

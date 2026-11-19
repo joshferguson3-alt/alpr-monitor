@@ -29,3 +29,32 @@ weak:
   - camera contract
   - Motorola Solutions
   - Axon
+
+# These apply only to agenda, minutes, and packet documents from registry
+# agencies, never news. A council item can be about the camera program
+# without using the product name.
+context:
+  - public safety technology
+  - police technology
+  - law enforcement technology
+  - camera system
+  - camera network
+  - security camera
+  - video surveillance
+  - traffic camera
+  - body-worn camera
+  - body camera
+  - in-car camera
+  - gunshot detection
+  - drone as first responder
+  - unmanned aircraft
+  - crime center
+  - situational awareness
+  - Axon
+  - Motorola
+  - Flock
+  - Genetec
+  - Verkada
+  - master services agreement
+  - police department contract
+  - police equipment

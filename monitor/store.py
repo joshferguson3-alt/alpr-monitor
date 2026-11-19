@@ -325,6 +325,65 @@ class Store:
         )
         self.conn.commit()
 
+    def document_counts_by_source(self) -> dict[str, int]:
+        rows = self.conn.execute(
+            "SELECT source_id, COUNT(*) AS n FROM documents GROUP BY source_id"
+        )
+        return {row["source_id"]: int(row["n"]) for row in rows}
+
+    def adopt_richer_text(self, url: str, text: str) -> sqlite3.Row | None:
+        """Keep a longer copy of a URL. Reopen it when it never became a signal."""
+        row = self.conn.execute("SELECT * FROM documents WHERE url = ?", (url,)).fetchone()
+        if row is None:
+            return None
+        new_text = (text or "")[:200_000]
+        if len(new_text) > len(row["text"] or ""):
+            self.conn.execute("UPDATE documents SET text = ? WHERE id = ?", (new_text, row["id"]))
+        has_signal = self.conn.execute(
+            "SELECT 1 FROM signals WHERE document_id = ?",
+            (row["id"],),
+        ).fetchone()
+        if not has_signal:
+            self.conn.execute(
+                "UPDATE documents SET classified_at = NULL, passed_prefilter = 0 WHERE id = ?",
+                (row["id"],),
+            )
+        self.conn.commit()
+        return self.conn.execute("SELECT * FROM documents WHERE id = ?", (row["id"],)).fetchone()
+
+    def signal_by_bill(self, bill_key: str) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM signals WHERE bill_id = ? ORDER BY id LIMIT 1",
+            (bill_key,),
+        ).fetchone()
+
+    def update_signal(self, signal_id: int, signal: dict[str, Any]) -> None:
+        self.conn.execute(
+            """
+            UPDATE signals SET
+              document_id = ?, signal_type = ?, summary = ?, quote = ?, confidence = ?,
+              score = ?, tier = ?, key_date = ?, key_date_meaning = ?, bill_id = ?,
+              needs_review = ?, created_at = ?
+            WHERE id = ?
+            """,
+            (
+                signal["document_id"],
+                signal["signal_type"],
+                signal["summary"],
+                signal.get("quote"),
+                signal.get("confidence"),
+                signal.get("score"),
+                signal.get("tier"),
+                signal.get("key_date"),
+                signal.get("key_date_meaning"),
+                signal.get("bill_id"),
+                int(signal.get("needs_review") or 0),
+                utcnow(),
+                signal_id,
+            ),
+        )
+        self.conn.commit()
+
     def insert_signal(self, signal: dict[str, Any]) -> int:
         cur = self.conn.execute(
             """

@@ -55,7 +55,7 @@ class LegiScanCollector:
                     f"https://api.legiscan.com/?key={key}&op=getBill&id={bill_id}"
                 ).json()
                 bill = (detail.get("bill") or {}) if detail.get("status") == "OK" else {}
-                body, have_text = _bill_body(http, key, bill)
+                body, _have_text = _bill_body(http, key, bill)
                 text = _metadata(bill, item)
                 if body:
                     text = text + "\n" + body
@@ -66,6 +66,8 @@ class LegiScanCollector:
                 # year=2 is already the current session. Do not drop a match
                 # because its last action is older than this run's window.
                 url_out = item.get("url") or bill.get("url") or f"https://legiscan.com/{state}/bill/{item.get('bill_number')}"
+                # The search already matched. A short title or a text file that did
+                # not decode must not be dropped before classification.
                 documents.append(
                     RawDocument(
                         source_id=source["id"],
@@ -74,7 +76,7 @@ class LegiScanCollector:
                         published_at=published,
                         doc_type="bill",
                         text=text,
-                        force_prefilter=not have_text,
+                        force_prefilter=True,
                     )
                 )
                 if len(documents) >= limit:
@@ -91,10 +93,12 @@ def _metadata(bill: dict, item: dict) -> str:
     history = []
     for action in (bill.get("history") or [])[-8:]:
         history.append(f"{action.get('date') or ''} {action.get('action') or ''}".strip())
+    last_action = history[-1] if history else ""
     parts = [
         item.get("bill_number") or bill.get("bill_number") or "",
         item.get("title") or bill.get("title") or "",
         item.get("description") or bill.get("description") or "",
+        f"Bill status: {last_action}" if last_action else "",
         "Sponsors: " + ", ".join(sponsors) if sponsors else "",
         "\n".join(history),
     ]
@@ -103,29 +107,43 @@ def _metadata(bill: dict, item: dict) -> str:
 
 def _bill_body(http: HttpClient, key: str, bill: dict) -> tuple[str, bool]:
     """Return (text, True) when the latest bill text was decoded."""
-    texts = [item for item in (bill.get("texts") or []) if isinstance(item, dict) and item.get("doc_id")]
+    texts = []
+    for item in bill.get("texts") or []:
+        if not isinstance(item, dict):
+            continue
+        doc_id = item.get("doc_id") or item.get("text_id")
+        if doc_id:
+            texts.append((item.get("date") or "", doc_id))
     if not texts:
         return "", False
-    chosen = sorted(texts, key=lambda item: item.get("date") or "")[-1]
+    best = ""
+    for _date, doc_id in sorted(texts, reverse=True):
+        decoded = _decode_bill_text(http, key, doc_id)
+        if len(decoded) > len(best):
+            best = decoded
+        if len(best) >= 800:
+            break
+    return best, bool(best)
+
+
+def _decode_bill_text(http: HttpClient, key: str, doc_id) -> str:
     try:
         payload = http.get(
-            f"https://api.legiscan.com/?key={quote(key)}&op=getBillText&id={chosen['doc_id']}"
+            f"https://api.legiscan.com/?key={quote(key)}&op=getBillText&id={doc_id}"
         ).json()
     except Exception:
-        return "", False
+        return ""
     if payload.get("status") != "OK":
-        return "", False
+        return ""
     record = payload.get("text") or {}
     encoded = record.get("doc") or record.get("text") or ""
     if not encoded:
-        return "", False
+        return ""
     try:
         raw = base64.b64decode(encoded)
     except Exception:
-        return "", False
+        return ""
     mime = (record.get("mime") or "").lower()
     if "pdf" in mime or raw[:4] == b"%PDF":
-        decoded = extract_pdf_text(raw)
-    else:
-        decoded = BeautifulSoup(raw, "html.parser").get_text("\n", strip=True)
-    return decoded.strip(), bool(decoded.strip())
+        return extract_pdf_text(raw).strip()
+    return BeautifulSoup(raw, "html.parser").get_text("\n", strip=True).strip()

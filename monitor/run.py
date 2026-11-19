@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from monitor.bills import bill_key, status_kind
 from monitor.classify import Classifier
 from monitor.collectors.civicplus import CivicPlusCollector
 from monitor.collectors.congress import CongressCollector
@@ -192,11 +193,21 @@ def _build_signal(result: dict, meta: dict, registry: Registry, store: Store, to
         "key_date_meaning": result.get("key_date_meaning"),
         "dollar_amount": result.get("dollar_amount"),
         "camera_count": result.get("camera_count"),
-        "bill_id": result.get("bill_id"),
+        "bill_id": bill_key(
+            meta.get("source_id"),
+            meta.get("url"),
+            meta.get("title"),
+            result.get("bill_id"),
+            (meta.get("published_at") or "")[:4],
+        ) or result.get("bill_id"),
         "quote": result.get("quote"),
         "confidence": result.get("confidence") if result.get("confidence") is not None else 0,
         "needs_review": needs,
     }
+    if meta.get("doc_type") == "bill":
+        status = _bill_status_line(meta.get("bill_text") or meta.get("text") or "")
+        if status:
+            signal["key_date_meaning"] = status
     agency = registry.agencies_by_id.get(agency_id) if agency_id else None
     person = registry.people_by_id.get(person_id) if person_id else None
     subject = None
@@ -241,8 +252,33 @@ def _refetch_text(http: HttpClient, url: str) -> str:
     return BeautifulSoup(response.text, "html.parser").get_text("\n", strip=True)
 
 
+def _bill_status_line(text: str) -> str:
+    for line in (text or "").splitlines():
+        if line.lower().startswith("bill status:"):
+            return line.split(":", 1)[1].strip()[:180]
+    return ""
+
+
+def _richer_bill(new: dict, old) -> bool:
+    if status_kind(f"{new.get('summary') or ''} {new.get('key_date_meaning') or ''}") != status_kind(
+        f"{old['summary'] or ''} {old['key_date_meaning'] or ''}"
+    ):
+        return True
+    new_info = len(new.get("summary") or "") + len(new.get("quote") or "")
+    old_info = len(old["summary"] or "") + len(old["quote"] or "")
+    return new_info > old_info + 40
+
+
 def _remember_signal(store: Store, signal: dict) -> int | None:
-    """Insert a signal unless this document already has the same type, quote, and summary."""
+    """Insert a signal unless this document or this bill already has one."""
+    bill = signal.get("bill_id") or ""
+    if bill.count(":") == 2:
+        existing = store.signal_by_bill(bill)
+        if existing is not None:
+            if _richer_bill(signal, existing):
+                store.update_signal(int(existing["id"]), signal)
+                return int(existing["id"])
+            return None
     if store.has_signal(
         signal["document_id"],
         signal["signal_type"],
@@ -287,6 +323,7 @@ def execute(
         return 0
 
     http = http or HttpClient()
+    prior_document_counts = store.document_counts_by_source()
     deadline = time.monotonic() + RUN_BUDGET_SECONDS
     classify_limit = CLASSIFY_DOC_CAP if classify_limit is None else classify_limit
     errors: list[dict[str, str]] = []
@@ -344,10 +381,14 @@ def execute(
                 stored = _store_document(store, doc)
                 payload = doc.as_dict() if hasattr(doc, "as_dict") else dict(doc)
                 if stored is None:
-                    existing = store.fill_text_if_empty(payload.get("url") or "", payload.get("text") or "")
+                    existing = store.adopt_richer_text(payload.get("url") or "", payload.get("text") or "")
+                    if existing is None:
+                        existing = store.fill_text_if_empty(payload.get("url") or "", payload.get("text") or "")
                     if existing is not None and existing["classified_at"] is None:
                         restored = dict(existing)
+                        restored["text"] = payload.get("text") or restored.get("text")
                         restored["entity"] = source.get("entity")
+                        restored["force_prefilter"] = bool(payload.get("force_prefilter"))
                         new_docs.append(restored)
                     continue
                 stored["entity"] = source.get("entity")
@@ -442,6 +483,8 @@ def execute(
                     "published_at": doc.get("published_at"),
                     "agency_name": agency["name"] if agency else None,
                     "text": passage,
+                    "url": doc.get("url"),
+                    "bill_text": doc.get("text") or "",
                 }
             )
         classified: list[tuple[dict, dict]] = []
@@ -604,7 +647,7 @@ def execute(
         else:
             _sync_notion(notion, store, registry, _signals_for_notion(store, signals), today, errors)
 
-    health = source_health_lines(source_stats, due, skipped, errors)
+    health = source_health_lines(source_stats, due, skipped, errors, prior_document_counts)
     if publish and send_email:
         documents = {}
         for signal in signals:

@@ -17,6 +17,13 @@ from monitor.collectors.base import MissingKeyError, RawDocument
 from monitor.constants import BILL_QUERY
 from monitor.http import HttpClient
 
+def _openstates_get(http: HttpClient, url: str, key: str) -> dict:
+    """Space calls out. A 429 is retried inside the HTTP client."""
+    http.pause(3)
+    payload = http.get(url, headers={"X-API-KEY": key, "Accept": "application/json"}, retries=4).json()
+    return payload if isinstance(payload, dict) else {}
+
+
 JURISDICTION = {
     "AL": "Alabama",
     "FL": "Florida",
@@ -42,7 +49,7 @@ class OpenStatesCollector:
             "https://v3.openstates.org/events"
             f"?jurisdiction={jurisdiction}&per_page=20"
         )
-        payload = http.get(url, headers={"X-API-KEY": key, "Accept": "application/json"}).json()
+        payload = _openstates_get(http, url, key)
         results = payload.get("results") or payload.get("data") or []
         documents: list[RawDocument] = []
         for event in results:
@@ -89,7 +96,7 @@ class OpenStatesCollector:
                 + quote(query)
                 + f"&per_page=20&page={page}&sort=updated_desc&include=sponsorships"
             )
-            payload = http.get(url, headers={"X-API-KEY": key, "Accept": "application/json"}).json()
+            payload = _openstates_get(http, url, key)
             results = payload.get("results") or []
             if not results:
                 break
@@ -138,6 +145,7 @@ class OpenStatesCollector:
                         published_at=action_date or None,
                         doc_type="bill",
                         text=text,
+                        force_prefilter=True,
                     )
                 )
                 if len(documents) >= int(source.get("max_docs") or 20):

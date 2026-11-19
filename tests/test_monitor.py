@@ -194,7 +194,7 @@ def test_legiscan_uses_bill_text_and_keeps_a_hit_when_text_is_missing(monkeypatc
     docs = LegiScanCollector().collect({"id": "fl-bills", "state": "FL", "max_docs": 10}, since=TODAY, until=TODAY, http=http)
     by_number = {doc.title.split()[0]: doc for doc in docs}
     assert "automated license plate recognition" in by_number["HB543"].text
-    assert by_number["HB543"].force_prefilter is False
+    assert by_number["HB543"].force_prefilter is True
     assert by_number["SB1"].force_prefilter is True
     http.close()
 
@@ -303,13 +303,15 @@ def test_source_health_warns_when_a_bill_source_is_silent():
     from monitor.digest import render_digest, source_health_lines
 
     lines = source_health_lines(
-        {"ga-bills": {"fetched": 3, "hits": 0, "signals": 0}, "eff-news": {"fetched": 0, "hits": 0, "signals": 0}},
-        [{"id": "ga-bills", "doc_type": "bill"}, {"id": "eff-news", "doc_type": "news"}],
+        {"ga-bills": {"fetched": 3, "hits": 0, "signals": 0}, "eff-news": {"fetched": 5, "hits": 0, "signals": 0}, "nc-bills": {"fetched": 0, "hits": 0, "signals": 0}},
+        [{"id": "ga-bills", "doc_type": "bill"}, {"id": "eff-news", "doc_type": "news"}, {"id": "nc-bills", "doc_type": "bill"}, {"id": "ky-events", "doc_type": "bill"}],
         [],
-        [],
+        [{"source_id": "ky-events", "message": "HTTP 429"}],
+        {"nc-bills": 4, "eff-news": 2},
     )
-    assert any(line.startswith("warning ga-bills:") for line in lines)
-    assert not any(line.startswith("warning eff-news:") for line in lines)
+    assert not any("0 passed the prefilter" in line for line in lines)
+    assert any(line.startswith("warnings:") and "nc-bills: returned 0 documents" in line and "ky-events: HTTP 429" in line for line in lines)
+    assert "eff-news" not in next(line for line in lines if line.startswith("warnings:"))
     subject, body = render_digest(
         [{"id": 1, "document_id": 1, "score": 50, "signal_type": "legislation_event", "summary": "A bill moved.", "quote": "quote", "agency_id": None}],
         documents={1: {"url": "https://example.test/bill"}},
@@ -320,8 +322,195 @@ def test_source_health_warns_when_a_bill_source_is_silent():
         source_health=lines,
     )
     assert "SOURCE HEALTH" in body
-    assert "warning ga-bills:" in body
+    assert "Warnings: nc-bills: returned 0 documents; ky-events: HTTP 429" in body
     assert subject.startswith("ALPR signals:")
+
+
+def test_nc_s257_and_tn_peeps_pass_prefilter(tmp_path, monkeypatch):
+    """Search hits for S257 and the PEEPS Act must reach classification."""
+    import base64
+
+    monkeypatch.setenv("LEGISCAN_API_KEY", "test-key")
+    s257 = base64.b64encode(
+        b"<p>S.L. 2026-41 creates a permanent highway automatic license plate reader program for the SBI and DOT.</p>"
+    ).decode()
+    peeps = base64.b64encode(
+        b"<p>The Protecting Everyone from Excessive Police Surveillance Act limits historical location data from license plate readers.</p>"
+    ).decode()
+    thin = base64.b64encode(b"<p>AN ACT</p>").decode()
+
+    def response_for(url: str):
+        if url.endswith("robots.txt"):
+            return httpx.Response(200, text="User-agent: *\nAllow: /\n")
+        if "getBillText" in url and "id=257" in url:
+            return httpx.Response(200, json={"status": "OK", "text": {"mime": "text/html", "doc": s257}})
+        if "getBillText" in url and "id=2215" in url:
+            return httpx.Response(200, json={"status": "OK", "text": {"mime": "text/html", "doc": peeps}})
+        if "getBillText" in url and "id=2608" in url:
+            return httpx.Response(200, json={"status": "OK", "text": {"mime": "text/html", "doc": thin}})
+        if "getBill" in url and "id=257" in url:
+            return httpx.Response(200, json={"status": "OK", "bill": {"bill_number": "S257", "title": "2026 Appropriations Act", "texts": [{"doc_id": 257, "date": "2026-07-07"}], "sponsors": [], "history": [{"date": "2026-07-07", "action": "Ratified, session law"}]}})
+        if "getBill" in url and "id=2215" in url:
+            return httpx.Response(200, json={"status": "OK", "bill": {"bill_number": "SB2215", "title": "historical location data", "texts": [{"doc_id": 2215, "date": "2026-02-01"}], "sponsors": [], "history": [{"date": "2026-02-01", "action": "Filed"}]}})
+        if "getBill" in url and "id=2608" in url:
+            return httpx.Response(200, json={"status": "OK", "bill": {"bill_number": "HB2608", "title": "historical location data", "texts": [{"doc_id": 2608, "date": "2026-02-01"}], "sponsors": [], "history": [{"date": "2026-02-01", "action": "Filed"}]}})
+        if "state=NC" in url:
+            return httpx.Response(200, json={"status": "OK", "searchresult": {"0": {"bill_id": 257, "bill_number": "S257", "title": "2026 Appropriations Act", "url": "https://legiscan.com/NC/bill/S257/2025"}}})
+        if "state=TN" in url:
+            return httpx.Response(200, json={"status": "OK", "searchresult": {"0": {"bill_id": 2215, "bill_number": "SB2215", "title": "PEEPS Act", "url": "https://legiscan.com/TN/bill/SB2215/2026"}, "1": {"bill_id": 2608, "bill_number": "HB2608", "title": "PEEPS Act", "url": "https://legiscan.com/TN/bill/HB2608/2026"}}})
+        return httpx.Response(404, text=url)
+
+    http = HttpClient(transport=httpx.MockTransport(lambda request: response_for(str(request.url))), sleep=lambda _s: None, min_delay=0)
+    registry = load_registry(
+        copy_config(
+            tmp_path,
+            [
+                {"id": "nc-bills", "collector": "legiscan", "state": "NC", "cadence": "daily"},
+                {"id": "tn-bills", "collector": "legiscan", "state": "TN", "cadence": "daily"},
+            ],
+        )
+    )
+    store = Store(tmp_path / "m.sqlite")
+    # A previous run stored the short title and marked it classified.
+    old = store.insert_document(
+        {
+            "source_id": "nc-bills",
+            "url": "https://legiscan.com/NC/bill/S257/2025",
+            "content_hash": "old-s257",
+            "title": "S257 2026 Appropriations Act",
+            "doc_type": "bill",
+            "text": "S257 2026 Appropriations Act",
+            "passed_prefilter": 0,
+        }
+    )
+    store.mark_classified(old)
+    execute(
+        registry,
+        store,
+        http=http,
+        classifier=QuoteClassifier(signal_type="legislation_event"),
+        today=TODAY,
+        ignore_cadence=True,
+        send_email=False,
+        sync_notion=False,
+    )
+    stored = {row["url"]: row["text"] for row in store.conn.execute("SELECT url, text FROM documents")}
+    assert "automatic license plate reader" in stored["https://legiscan.com/NC/bill/S257/2025"]
+    assert "license plate reader" in stored["https://legiscan.com/TN/bill/SB2215/2026"]
+    hits = {row["source_id"] for row in store.conn.execute("SELECT source_id FROM documents WHERE passed_prefilter = 1")}
+    assert hits == {"nc-bills", "tn-bills"}
+    keys = {row["bill_id"] for row in store.conn.execute("SELECT bill_id FROM signals")}
+    assert "NC:S257:2025" in keys
+    assert "TN:SB2215:2026" in keys
+    assert "TN:HB2608:2026" in keys
+    store.close()
+    http.close()
+
+
+def test_one_signal_per_bill_across_sources(tmp_path):
+    from monitor.run import _remember_signal
+
+    store = Store(tmp_path / "m.sqlite")
+    first = store.insert_document(
+        {"source_id": "fl-bills", "url": "https://legiscan.com/FL/bill/HB543/2026", "content_hash": "a", "title": "HB543", "doc_type": "bill", "text": "introduced"}
+    )
+    second = store.insert_document(
+        {"source_id": "openstates-fl", "url": "https://openstates.org/fl/bills/2026/HB543", "content_hash": "b", "title": "HB 543", "doc_type": "bill", "text": "enacted text " * 30}
+    )
+    introduced = {
+        "document_id": first,
+        "signal_type": "legislation_event",
+        "summary": "HB 543 was filed.",
+        "quote": "filed",
+        "bill_id": "FL:HB543:2026",
+        "key_date_meaning": "Filed",
+        "confidence": 0.8,
+        "score": 30,
+        "tier": "Background",
+    }
+    assert _remember_signal(store, introduced) is not None
+    enacted = dict(introduced)
+    enacted["document_id"] = second
+    enacted["summary"] = "HB 543 was signed and creates a statewide license plate reader program."
+    enacted["quote"] = "signed statewide license plate reader program"
+    enacted["key_date_meaning"] = "Signed by Governor"
+    enacted["score"] = 70
+    enacted["tier"] = "Act now"
+    _remember_signal(store, enacted)
+    rows = list(store.conn.execute("SELECT summary, key_date_meaning, document_id FROM signals"))
+    assert len(rows) == 1
+    assert rows[0]["key_date_meaning"] == "Signed by Governor"
+    assert rows[0]["document_id"] == second
+    store.close()
+
+
+def test_bill_status_changes_the_score():
+    today = date(2026, 11, 12)
+    enacted, tier = score_signal(
+        {
+            "signal_type": "legislation_event",
+            "confidence": 0.6,
+            "summary": "North Carolina enacted a permanent highway automatic license plate reader program.",
+            "quote": "session law",
+            "key_date_meaning": "Ratified, session law",
+        },
+        agency=None,
+        person=None,
+        stance_changed=False,
+        today=today,
+        state="NC",
+    )
+    assert tier == "Act now" and enacted >= 70
+    dead, dead_tier = score_signal(
+        {
+            "signal_type": "legislation_event",
+            "confidence": 1,
+            "summary": "The license plate reader bill died in committee.",
+            "quote": "",
+            "key_date_meaning": "Died in committee",
+        },
+        agency=None,
+        person=None,
+        stance_changed=False,
+        today=today,
+        state="TN",
+    )
+    assert dead_tier == "Background" and dead < 40
+    local, local_tier = score_signal(
+        {
+            "signal_type": "legislation_event",
+            "confidence": 1,
+            "summary": "Appropriation for the City of Tampa license plate reader project.",
+            "quote": "",
+            "key_date_meaning": "Signed by Governor",
+        },
+        agency=None,
+        person=None,
+        stance_changed=False,
+        today=today,
+        state="FL",
+    )
+    assert local_tier == "Background" and local < enacted
+
+
+def test_openstates_retries_after_429():
+    calls = {"n": 0}
+    waits = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("robots.txt"):
+            return httpx.Response(200, text="User-agent: *\nAllow: /\n")
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "1"}, text="slow down")
+        return httpx.Response(200, json={"results": []})
+
+    http = HttpClient(transport=httpx.MockTransport(handler), sleep=lambda seconds: waits.append(seconds), min_delay=0, retries=1)
+    payload = http.get("https://v3.openstates.org/events?jurisdiction=Kentucky").json()
+    assert payload == {"results": []}
+    assert calls["n"] == 2
+    assert 1 in waits
+    http.close()
 
 
 def test_context_terms_match_agency_agendas_only(tmp_path):

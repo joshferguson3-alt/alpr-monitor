@@ -11,6 +11,14 @@ import httpx
 from monitor.constants import HTTP_RETRIES, HTTP_TIMEOUT, MIN_HOST_DELAY, USER_AGENT
 
 
+def _retry_after(response: httpx.Response, attempt: int) -> float:
+    raw = response.headers.get("Retry-After") or ""
+    try:
+        return min(60.0, max(1.0, float(raw)))
+    except ValueError:
+        return min(60.0, 5.0 * (2 ** (attempt - 1)))
+
+
 class RobotsDenied(RuntimeError):
     """The host's robots.txt disallows this URL."""
 
@@ -43,6 +51,10 @@ class HttpClient:
 
     def close(self) -> None:
         self._client.close()
+
+    def pause(self, seconds: float) -> None:
+        if seconds > 0:
+            self._sleep(seconds)
 
     def get(
         self,
@@ -82,7 +94,9 @@ class HttpClient:
         attempts = self.retries if retries is None else retries
         request_timeout = self.timeout if timeout is None else timeout
         last_error: Exception | None = None
-        for attempt in range(attempts + 1):
+        rate_waits = 0
+        attempt = 0
+        while attempt <= attempts:
             self._wait(host, delay)
             try:
                 response = self._client.request(
@@ -93,12 +107,21 @@ class HttpClient:
                 if attempt >= attempts:
                     raise
                 self._sleep(min(2 ** attempt, 4))
+                attempt += 1
                 continue
-            if response.status_code in {429, 500, 502, 503, 504} and attempt < attempts:
+            if response.status_code == 429 and rate_waits < 4:
+                rate_waits += 1
+                last_error = httpx.HTTPStatusError(
+                    "HTTP 429", request=response.request, response=response
+                )
+                self._sleep(_retry_after(response, rate_waits))
+                continue
+            if response.status_code in {500, 502, 503, 504} and attempt < attempts:
                 last_error = httpx.HTTPStatusError(
                     f"HTTP {response.status_code}", request=response.request, response=response
                 )
                 self._sleep(min(2 ** attempt, 4))
+                attempt += 1
                 continue
             response.raise_for_status()
             return response

@@ -18,13 +18,15 @@ def source_health_lines(
     sources: list[dict[str, Any]],
     skipped: list[dict[str, str]],
     errors: list[dict[str, str]],
+    prior_counts: dict[str, int] | None = None,
 ) -> list[str]:
-    """Per-source counts, plus a warning when a core source is silent or failed."""
+    """Per-source counts. Warn only on errors or a usually-productive source going to zero."""
     skipped_by_id = {item["source_id"]: item.get("message") or "skipped" for item in skipped}
     errors_by_id: dict[str, str] = {}
     for item in errors:
         errors_by_id.setdefault(item.get("source_id") or "", item.get("message") or "error")
     lines: list[str] = []
+    warnings: list[str] = []
     for source in sources:
         source_id = source["id"]
         item = stats.get(source_id) or {"fetched": 0, "hits": 0, "signals": 0}
@@ -36,13 +38,12 @@ def source_health_lines(
             f"prefilter {item.get('hits', 0)}, signals {item.get('signals', 0)}"
         )
         message = errors_by_id.get(source_id)
-        core = source.get("doc_type") in {"agenda", "minutes", "packet", "bill", "court"}
         if message:
-            lines.append(f"warning {source_id}: {message}")
-        elif core and item.get("fetched", 0) == 0:
-            lines.append(f"warning {source_id}: returned 0 documents")
-        elif core and item.get("fetched", 0) > 0 and item.get("hits", 0) == 0:
-            lines.append(f"warning {source_id}: documents fetched but 0 passed the prefilter")
+            warnings.append(f"{source_id}: {message}")
+        elif item.get("fetched", 0) == 0 and (prior_counts or {}).get(source_id, 0) > 0:
+            warnings.append(f"{source_id}: returned 0 documents")
+    if warnings:
+        lines.append("warnings: " + "; ".join(warnings))
     return lines
 
 
@@ -128,7 +129,11 @@ def render_digest(
     )
     sections.append("")
     sections.append("SOURCE HEALTH")
-    sections.extend(source_health or ["(none)"])
+    counts = [line for line in (source_health or []) if not line.startswith("warnings:")]
+    sections.extend(counts or ["(none)"])
+    warning_line = next((line for line in (source_health or []) if line.startswith("warnings:")), "")
+    if warning_line:
+        sections.append(warning_line.replace("warnings: ", "Warnings: ", 1))
     subject = f"ALPR signals: {len(act)} act now, {len(watch)} watch ({today.isoformat()})"
     if lookback_days:
         subject = f"{subject} Backfill: last {lookback_days} days"

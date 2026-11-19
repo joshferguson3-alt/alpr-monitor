@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+from monitor.bills import is_local_appropriation, is_program_or_ban, status_kind
 from monitor.constants import COVERED_STATES, INCUMBENT_VENDOR
 
 BASE = {
@@ -104,12 +105,19 @@ def score_signal(
         if at_registry:
             modifiers += 10
     elif signal_type == "legislation_event":
-        if "hearing" in blob:
-            modifiers += 20
-        if any(phrase in blob for phrase in ("passed the house", "passed the senate", "passed a chamber", "passed the chamber")):
-            modifiers += 35
-        if any(phrase in blob for phrase in ("signed into law", "was signed", "governor signed", "bill was signed")):
-            modifiers += 50
+        kind = status_kind(blob)
+        local = is_local_appropriation(blob)
+        if local:
+            modifiers -= 20
+        else:
+            if "hearing" in blob:
+                modifiers += 20
+            if kind == "passed":
+                modifiers += 35
+            elif kind == "enacted":
+                modifiers += 50
+            elif kind == "dead":
+                modifiers -= 25
     elif signal_type == "vendor_move":
         covered = (state or (agency or {}).get("state") or "").upper()
         if covered in COVERED_STATES:
@@ -130,6 +138,16 @@ def score_signal(
 
     confidence = float(signal.get("confidence") if signal.get("confidence") is not None else 1.0)
     score = _round_cap((base + modifiers) * confidence)
+    if signal_type == "legislation_event" and not is_local_appropriation(blob):
+        kind = status_kind(blob)
+        covered = (state or (agency or {}).get("state") or "").upper()
+        if not covered or covered in COVERED_STATES:
+            if kind == "enacted" and is_program_or_ban(blob):
+                score = max(score, 70)
+            elif kind == "enacted":
+                score = max(score, 48)
+            elif kind == "passed":
+                score = max(score, 42)
     return score, tier_for(score)
 
 

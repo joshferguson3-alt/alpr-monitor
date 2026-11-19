@@ -11,7 +11,10 @@ from __future__ import annotations
 import os
 from datetime import date
 
+from urllib.parse import quote
+
 from monitor.collectors.base import MissingKeyError, RawDocument
+from monitor.constants import BILL_QUERY
 from monitor.http import HttpClient
 
 JURISDICTION = {
@@ -70,4 +73,76 @@ class OpenStatesCollector:
                     text=text,
                 )
             )
+        documents.extend(self._bills(source, jurisdiction, http, key))
+        return documents
+
+    def _bills(self, source: dict, jurisdiction: str, http: HttpClient, key: str) -> list[RawDocument]:
+        """Bill search backup. Search hits are kept even when the last action is old."""
+        query = source.get("query") or BILL_QUERY
+        documents: list[RawDocument] = []
+        seen: set[str] = set()
+        for page in range(1, 4):
+            url = (
+                "https://v3.openstates.org/bills?jurisdiction="
+                + quote(jurisdiction)
+                + "&q="
+                + quote(query)
+                + f"&per_page=20&page={page}&sort=updated_desc&include=sponsorships"
+            )
+            payload = http.get(url, headers={"X-API-KEY": key, "Accept": "application/json"}).json()
+            results = payload.get("results") or []
+            if not results:
+                break
+            for bill in results:
+                identifier = bill.get("identifier") or bill.get("id") or ""
+                if not identifier or identifier in seen:
+                    continue
+                seen.add(identifier)
+                abstracts = []
+                for abstract in bill.get("abstracts") or []:
+                    if isinstance(abstract, dict):
+                        abstracts.append(abstract.get("abstract") or "")
+                    elif isinstance(abstract, str):
+                        abstracts.append(abstract)
+                sponsors = []
+                for sponsor in bill.get("sponsorships") or []:
+                    if isinstance(sponsor, dict) and sponsor.get("name"):
+                        sponsors.append(sponsor["name"])
+                action = ((bill.get("latest_action") or {}).get("description") or "") if isinstance(bill.get("latest_action"), dict) else ""
+                action_date = ""
+                if isinstance(bill.get("latest_action"), dict):
+                    action_date = (bill["latest_action"].get("date") or "")[:10]
+                text = "\n".join(
+                    part
+                    for part in (
+                        identifier,
+                        bill.get("title") or "",
+                        "\n".join(abstracts),
+                        action,
+                        "Sponsors: " + ", ".join(sponsors) if sponsors else "",
+                    )
+                    if part
+                )
+                link = bill.get("openstates_url") or ""
+                if not link:
+                    sources = bill.get("sources") or []
+                    if sources and isinstance(sources[0], dict):
+                        link = sources[0].get("url") or ""
+                if not link:
+                    link = f"https://openstates.org/bills/{identifier}"
+                documents.append(
+                    RawDocument(
+                        source_id=source["id"],
+                        url=link,
+                        title=f"{identifier} {bill.get('title') or ''}".strip(),
+                        published_at=action_date or None,
+                        doc_type="bill",
+                        text=text,
+                    )
+                )
+                if len(documents) >= int(source.get("max_docs") or 20):
+                    return documents
+            pagination = payload.get("pagination") or {}
+            if page >= int(pagination.get("max_page") or page):
+                break
         return documents

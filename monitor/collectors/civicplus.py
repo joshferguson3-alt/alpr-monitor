@@ -70,29 +70,14 @@ class CivicPlusCollector:
             stamp = posted or meeting_date
             if stamp and (stamp < since or stamp > until):
                 continue
-            link = row.select_one('a[href*="ViewFile/Agenda"][href*="html=true"]')
-            if link is None:
-                link = row.select_one('a[href*="html=true"]')
-            if link is None:
-                link = row.select_one('a[href*="ViewFile/Agenda"]')
-            if link is None:
-                link = row.select_one('a[href*="ViewFile/Minutes"]')
-            if link is None or not link.get("href"):
+            candidates = _file_links(row, source["url"])
+            if not candidates:
                 continue
-            url = urljoin(source["url"], link["href"])
-            title_node = row.select_one("a[href*='html=true'], a[href*='ViewFile/Agenda']")
-            title = (title_node.get_text(" ", strip=True) if title_node else "") or (link.get_text(" ", strip=True))
+            title_node = row.select_one("a[href*='ViewFile'], a[href*='html=true']")
+            title = (title_node.get_text(" ", strip=True) if title_node else "") or candidates[0][0]
             if meeting_date:
                 title = f"{title} ({meeting_date.isoformat()})" if title else meeting_date.isoformat()
-            body = http.get(url)
-            content_type = body.headers.get("content-type", "")
-            if "pdf" in content_type or url.lower().endswith(".pdf"):
-                text_body = extract_pdf_text(body.content)
-                doc_type = "packet"
-            else:
-                page = BeautifulSoup(body.text, "html.parser")
-                text_body = page.get_text("\n", strip=True)
-                doc_type = "agenda"
+            text_body, url, doc_type = _fullest_text(http, candidates)
             if not text_body.strip():
                 continue
             documents.append(
@@ -157,6 +142,58 @@ class CivicPlusCollector:
                     return documents
             url = payload.get("@odata.nextLink")
         return documents
+
+
+def _file_links(row, base: str) -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for anchor in row.select("a[href]"):
+        href = anchor.get("href") or ""
+        label = anchor.get_text(" ", strip=True).lower()
+        interesting = (
+            "ViewFile" in href
+            or "html=true" in href.lower()
+            or ".pdf" in href.lower()
+            or any(word in label for word in ("packet", "agenda", "minutes"))
+        )
+        if not interesting:
+            continue
+        url = urljoin(base, href)
+        if url in seen:
+            continue
+        seen.add(url)
+        found.append((anchor.get_text(" ", strip=True), url))
+    def rank(item: tuple[str, str]) -> tuple[int, int]:
+        label, url = item
+        blob = f"{label} {url}".lower()
+        if "packet" in blob:
+            return (0, len(url))
+        if "html=true" in blob:
+            return (2, len(url))
+        return (1, len(url))
+    return sorted(found, key=rank)
+
+
+def _read_body(http: HttpClient, url: str) -> tuple[str, str]:
+    body = http.get(url)
+    content_type = body.headers.get("content-type", "")
+    if "pdf" in content_type or url.lower().endswith(".pdf") or body.content[:4] == b"%PDF":
+        return extract_pdf_text(body.content), "packet"
+    return BeautifulSoup(body.text, "html.parser").get_text("\n", strip=True), "agenda"
+
+
+def _fullest_text(http: HttpClient, candidates: list[tuple[str, str]]) -> tuple[str, str, str]:
+    """Fetch the packet when the HTML agenda is only a title list."""
+    best = ""
+    best_url = candidates[0][1]
+    best_type = "agenda"
+    for _label, url in candidates:
+        text, doc_type = _read_body(http, url)
+        if len(text) > len(best):
+            best, best_url, best_type = text, url, doc_type
+        if len(best) >= 300:
+            break
+    return best, best_url, best_type
 
 
 def _tenant_from_url(url: str) -> str:

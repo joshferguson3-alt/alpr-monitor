@@ -1,20 +1,25 @@
 """LegiScan public pull API.
 
 GET https://api.legiscan.com/?key=KEY&op=getSearch&state=GA&query=QUERY&year=2
-then op=getBill&id=BILL_ID. Public tier is 10,000 queries per month.
-https://legiscan.com/legiscan and the API user manual, checked 2026-11-12.
+then op=getBill&id=BILL_ID and op=getBillText&id=DOC_ID. Public tier is
+10,000 queries per month. https://legiscan.com/legiscan, checked 2026-11-12.
 """
 
 from __future__ import annotations
 
+import base64
 import os
 from datetime import date
 from urllib.parse import quote
 
-from monitor.collectors.base import MissingKeyError, RawDocument
-from monitor.http import HttpClient
+from bs4 import BeautifulSoup
 
-QUERIES = ("license plate reader OR ALPR",)
+from monitor.collectors.base import MissingKeyError, RawDocument
+from monitor.constants import BILL_QUERY
+from monitor.http import HttpClient
+from monitor.pdftext import extract_pdf_text
+
+QUERIES = (BILL_QUERY,)
 
 
 class LegiScanCollector:
@@ -26,6 +31,7 @@ class LegiScanCollector:
         seen: set[int] = set()
         documents: list[RawDocument] = []
         queries = (source["query"],) if source.get("query") else QUERIES
+        limit = int(source.get("max_docs") or 30)
         for query in queries:
             search_url = (
                 "https://api.legiscan.com/?key="
@@ -49,7 +55,10 @@ class LegiScanCollector:
                     f"https://api.legiscan.com/?key={key}&op=getBill&id={bill_id}"
                 ).json()
                 bill = (detail.get("bill") or {}) if detail.get("status") == "OK" else {}
-                text = _bill_text(bill, item)
+                body, have_text = _bill_body(http, key, bill)
+                text = _metadata(bill, item)
+                if body:
+                    text = text + "\n" + body
                 last_action = item.get("last_action")
                 last_action_date = last_action.get("date") if isinstance(last_action, dict) else None
                 change = item.get("last_action_date") or item.get("status_date") or last_action_date or ""
@@ -65,14 +74,15 @@ class LegiScanCollector:
                         published_at=published,
                         doc_type="bill",
                         text=text,
+                        force_prefilter=not have_text,
                     )
                 )
-                if len(documents) >= int(source.get("max_docs") or 15):
+                if len(documents) >= limit:
                     return documents
         return documents
 
 
-def _bill_text(bill: dict, item: dict) -> str:
+def _metadata(bill: dict, item: dict) -> str:
     sponsors = []
     for sponsor in bill.get("sponsors") or []:
         name = sponsor.get("name") or ""
@@ -89,3 +99,33 @@ def _bill_text(bill: dict, item: dict) -> str:
         "\n".join(history),
     ]
     return "\n".join(part for part in parts if part)
+
+
+def _bill_body(http: HttpClient, key: str, bill: dict) -> tuple[str, bool]:
+    """Return (text, True) when the latest bill text was decoded."""
+    texts = [item for item in (bill.get("texts") or []) if isinstance(item, dict) and item.get("doc_id")]
+    if not texts:
+        return "", False
+    chosen = sorted(texts, key=lambda item: item.get("date") or "")[-1]
+    try:
+        payload = http.get(
+            f"https://api.legiscan.com/?key={quote(key)}&op=getBillText&id={chosen['doc_id']}"
+        ).json()
+    except Exception:
+        return "", False
+    if payload.get("status") != "OK":
+        return "", False
+    record = payload.get("text") or {}
+    encoded = record.get("doc") or record.get("text") or ""
+    if not encoded:
+        return "", False
+    try:
+        raw = base64.b64decode(encoded)
+    except Exception:
+        return "", False
+    mime = (record.get("mime") or "").lower()
+    if "pdf" in mime or raw[:4] == b"%PDF":
+        decoded = extract_pdf_text(raw)
+    else:
+        decoded = BeautifulSoup(raw, "html.parser").get_text("\n", strip=True)
+    return decoded.strip(), bool(decoded.strip())

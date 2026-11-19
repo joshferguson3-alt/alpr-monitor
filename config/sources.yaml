@@ -7,9 +7,11 @@
   url: https://brookhavenga.primegov.com/public/portal
   cadence: daily
   doc_type: agenda
-  # Live check 2026-11-19: robots.txt is "User-agent: * / Disallow: /". Left disabled.
+  # PrimeGov robots.txt is Disallow: /. brookhavenga.gov/AgendaCenter is also
+  # disallowed for User-agent: *. No CivicClerk or Legistar client. Left disabled.
+  # Checked 2026-11-19.
   enabled: false
-  skip_reason: "disabled, skipped (brookhavenga.primegov.com robots.txt Disallow: /)"
+  skip_reason: "disabled, skipped (PrimeGov and brookhavenga.gov/AgendaCenter are disallowed by robots.txt)"
 
 - id: brookhaven-news
   collector: generic_html
@@ -26,15 +28,13 @@
   collector: generic_html
   entity: dunwoody-pd
   url: https://dunwoodyga.hylandcloud.com/211agendaonline/Meetings
+  mode: onbase
   cadence: daily
   doc_type: agenda
-  # Live check 2026-11-19: HTTP 200, robots.txt 404 (allowed). The page is a search
-  # form and does not list the April 13, 2026 agenda, so that vote is collected below.
-  link_contains: ViewMeeting
-  selectors:
-    item: "a"
-    title: "a"
-    link: "a"
+  # The meetings page is a search form. mode=onbase POSTs City Council and
+  # work session for the last year and this year, then downloads agenda packets.
+  # robots.txt is 404, so the host is allowed. Checked 2026-11-19.
+  meeting_types: ["106", "107"]
 
 - id: sandy-springs-meetings
   collector: civicplus
@@ -62,11 +62,11 @@
   url: https://roswellcityga.iqm2.com/Citizens/Default.aspx
   cadence: daily
   doc_type: agenda
-  # Live check 2026-11-19: homepage HTTP 200 and agendas are in the HTML.
-  # robots.txt allows the portal with Crawl-delay: 60, which still times out
-  # a GitHub Actions request. Left disabled.
+  # IQM2 allows the portal (crawl-delay 60) but the page times out from GitHub
+  # Actions. roswellgov.com has no AgendaCenter, disallows /wp-content/uploads,
+  # and CivicClerk/Legistar are 404. Left disabled. Checked 2026-11-19.
   enabled: false
-  skip_reason: "disabled, skipped (roswellcityga.iqm2.com timed out from GitHub Actions after 60s and one retry; check agendas by hand)"
+  skip_reason: "disabled, skipped (roswellcityga.iqm2.com timed out from GitHub Actions; city site has no allowed agenda feed)"
   bodies:
     - Mayor and Council
 
@@ -110,83 +110,71 @@
 - id: ga-bills
   collector: legiscan
   state: GA
-  query: license plate reader OR ALPR
   cadence: daily
   doc_type: bill
 
 - id: tn-bills
   collector: legiscan
   state: TN
-  query: license plate reader OR ALPR
   cadence: daily
   doc_type: bill
 
 - id: fl-bills
   collector: legiscan
   state: FL
-  query: license plate reader OR ALPR
   cadence: daily
   doc_type: bill
 
 - id: al-bills
   collector: legiscan
   state: AL
-  query: license plate reader OR ALPR
   cadence: daily
   doc_type: bill
 
 - id: sc-bills
   collector: legiscan
   state: SC
-  query: license plate reader OR ALPR
   cadence: daily
   doc_type: bill
 
 - id: nc-bills
   collector: legiscan
   state: NC
-  query: license plate reader OR ALPR
   cadence: daily
   doc_type: bill
 
 - id: ms-bills
   collector: legiscan
   state: MS
-  query: license plate reader OR ALPR
   cadence: daily
   doc_type: bill
 
 - id: la-bills
   collector: legiscan
   state: LA
-  query: license plate reader OR ALPR
   cadence: daily
   doc_type: bill
 
 - id: ky-bills
   collector: legiscan
   state: KY
-  query: license plate reader OR ALPR
   cadence: daily
   doc_type: bill
 
 - id: va-bills
   collector: legiscan
   state: VA
-  query: license plate reader OR ALPR
   cadence: daily
   doc_type: bill
 
 - id: us-bills
   collector: legiscan
   state: US
-  query: license plate reader OR ALPR
   cadence: daily
   doc_type: bill
 
 - id: congress-bills
   collector: congress
-  query: license plate reader
   cadence: weekly
   doc_type: bill
 
@@ -343,6 +331,8 @@
   url: https://dekalbcountyga.legistar.com/Calendar.aspx
   cadence: daily
   doc_type: agenda
+  # Agenda PDFs are on dekalbcountyga.legistar1.com, whose robots.txt is
+  # Disallow: /. The collector uses the public event-item API instead.
 
 - id: four-oh-four-media
   collector: rss

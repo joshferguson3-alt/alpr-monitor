@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY,
   started_at TEXT, finished_at TEXT,
   docs_fetched INTEGER, docs_new INTEGER, passages_classified INTEGER,
-  signals_created INTEGER, errors TEXT
+  signals_created INTEGER, errors TEXT, source_health TEXT
 );
 """
 
@@ -103,6 +103,9 @@ class Store:
             )
         if "text" not in columns:
             self.conn.execute("ALTER TABLE documents ADD COLUMN text TEXT")
+        run_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(runs)")}
+        if "source_health" not in run_columns:
+            self.conn.execute("ALTER TABLE runs ADD COLUMN source_health TEXT")
 
     def close(self) -> None:
         self.conn.close()
@@ -429,12 +432,13 @@ class Store:
         passages_classified: int,
         signals_created: int,
         errors: list[dict[str, str]],
+        source_health: list[str] | None = None,
     ) -> None:
         self.conn.execute(
             """
             UPDATE runs
             SET finished_at = ?, docs_fetched = ?, docs_new = ?, passages_classified = ?,
-                signals_created = ?, errors = ?
+                signals_created = ?, errors = ?, source_health = ?
             WHERE id = ?
             """,
             (
@@ -444,10 +448,27 @@ class Store:
                 passages_classified,
                 signals_created,
                 json.dumps(errors),
+                json.dumps(source_health or []),
                 run_id,
             ),
         )
         self.conn.commit()
+
+    def latest_source_health(self) -> list[str]:
+        row = self.conn.execute(
+            """
+            SELECT source_health FROM runs
+            WHERE source_health IS NOT NULL AND source_health != ''
+            ORDER BY id DESC LIMIT 1
+            """
+        ).fetchone()
+        if not row or not row["source_health"]:
+            return []
+        try:
+            loaded = json.loads(row["source_health"])
+        except json.JSONDecodeError:
+            return []
+        return loaded if isinstance(loaded, list) else []
 
     def signals_created_since(self, iso_timestamp: str) -> list[sqlite3.Row]:
         return list(

@@ -11,6 +11,7 @@ from datetime import date
 from urllib.parse import quote
 
 from monitor.collectors.base import MissingKeyError, RawDocument
+from monitor.constants import BILL_QUERY
 from monitor.http import HttpClient
 
 
@@ -19,7 +20,7 @@ class CongressCollector:
         key = os.environ.get("CONGRESS_API_KEY")
         if not key:
             raise MissingKeyError("CONGRESS_API_KEY")
-        query = source.get("query") or "license plate reader"
+        query = source.get("query") or BILL_QUERY
         url = (
             "https://api.congress.gov/v3/bill?query="
             + quote(query)

@@ -164,6 +164,164 @@ def test_prefilter_flock_and_lpr():
     assert not passes("The report mentions LPR only.", keywords)
     assert passes("The LPR policy covers data retention.", keywords)
     assert passes("A license plate reader contract is on the agenda.", keywords)
+    assert passes("automated license plate recognition systems shall expire.", keywords)
+    assert passes("The bill covers vehicle location data.", keywords)
+    assert passes("Flock Group would operate the cameras.", keywords)
+
+
+def test_legiscan_uses_bill_text_and_keeps_a_hit_when_text_is_missing(monkeypatch):
+    import base64
+
+    monkeypatch.setenv("LEGISCAN_API_KEY", "test-key")
+    encoded = base64.b64encode(b"<p>automated license plate recognition systems shall be limited.</p>").decode()
+
+    def response_for(url: str):
+        if url.endswith("robots.txt"):
+            return httpx.Response(200, text="User-agent: *\nAllow: /\n")
+        if "getBillText" in url:
+            if "id=9" in url:
+                return httpx.Response(200, json={"status": "OK", "text": {"doc_id": 9, "mime": "text/html", "doc": encoded}})
+            return httpx.Response(200, json={"status": "ERROR"})
+        if "getBill" in url and "id=1" in url:
+            return httpx.Response(200, json={"status": "OK", "bill": {"bill_number": "HB543", "title": "Traffic", "texts": [{"doc_id": 9, "date": "2026-03-01"}], "sponsors": [], "history": []}})
+        if "getBill" in url and "id=2" in url:
+            return httpx.Response(200, json={"status": "OK", "bill": {"bill_number": "SB1", "title": "Other", "texts": [{"doc_id": 8, "date": "2026-03-01"}], "sponsors": [], "history": []}})
+        if "getSearch" in url:
+            return httpx.Response(200, json={"status": "OK", "searchresult": {"0": {"bill_id": 1, "bill_number": "HB543", "title": "Traffic", "url": "https://legiscan.com/FL/bill/HB543"}, "1": {"bill_id": 2, "bill_number": "SB1", "title": "Other", "url": "https://legiscan.com/FL/bill/SB1"}}})
+        return httpx.Response(404, text=url)
+
+    http = HttpClient(transport=httpx.MockTransport(lambda request: response_for(str(request.url))), sleep=lambda _s: None, min_delay=0)
+    docs = LegiScanCollector().collect({"id": "fl-bills", "state": "FL", "max_docs": 10}, since=TODAY, until=TODAY, http=http)
+    by_number = {doc.title.split()[0]: doc for doc in docs}
+    assert "automated license plate recognition" in by_number["HB543"].text
+    assert by_number["HB543"].force_prefilter is False
+    assert by_number["SB1"].force_prefilter is True
+    http.close()
+
+
+def test_openstates_bill_search_is_a_backup(monkeypatch):
+    monkeypatch.setenv("OPENSTATES_API_KEY", "test-key")
+
+    def response_for(url: str):
+        if url.endswith("robots.txt"):
+            return httpx.Response(200, text="User-agent: *\nAllow: /\n")
+        if "/bills?" in url:
+            return httpx.Response(200, json={"results": [{"identifier": "HB 543", "title": "Plate readers", "openstates_url": "https://openstates.org/fl/bills/hb543", "abstracts": ["automated license plate recognition systems"]}], "pagination": {"max_page": 1}})
+        return httpx.Response(200, json={"results": []})
+
+    http = HttpClient(transport=httpx.MockTransport(lambda request: response_for(str(request.url))), sleep=lambda _s: None, min_delay=0)
+    from monitor.collectors.openstates import OpenStatesCollector
+
+    docs = OpenStatesCollector().collect({"id": "openstates-fl", "state": "FL"}, since=TODAY, until=TODAY, http=http)
+    assert any("HB 543" in doc.title and "automated license plate recognition" in doc.text for doc in docs)
+    http.close()
+
+
+def test_courtlistener_includes_southeast_dockets(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_TOKEN", "token")
+    asked = []
+
+    def response_for(url: str):
+        if url.endswith("robots.txt"):
+            return httpx.Response(200, text="User-agent: *\nAllow: /\n")
+        asked.append(url)
+        if "type=r" in url:
+            return httpx.Response(200, json={"results": [{"court_id": "gamd", "caseName": "State v. Cameras", "absolute_url": "/docket/1/", "dateFiled": "2026-11-01", "snippet": "Flock Safety cameras"}]})
+        return httpx.Response(200, json={"results": [{"court_id": "ca9", "caseName": "West case", "absolute_url": "/opinion/9/", "dateFiled": "2026-11-01", "snippet": "ALPR"}, {"court_id": "ca11", "caseName": "South case", "absolute_url": "/opinion/11/", "dateFiled": "2026-11-01", "snippet": "ALPR"}]})
+
+    http = HttpClient(transport=httpx.MockTransport(lambda request: response_for(str(request.url))), sleep=lambda _s: None, min_delay=0)
+    from monitor.collectors.courtlistener import CourtListenerCollector
+
+    docs = CourtListenerCollector().collect({"id": "court-opinions"}, since=date(2026, 1, 1), until=TODAY, http=http)
+    titles = [doc.title for doc in docs]
+    assert any(title.startswith("Docket:") for title in titles)
+    assert any("South case" in title for title in titles)
+    assert not any("West case" in title for title in titles)
+    assert any("type=r" in url for url in asked)
+    http.close()
+
+
+def test_agenda_packet_is_used_when_the_html_agenda_is_thin():
+    listing = """
+    <table><tr class="catAgendaRow">
+      <td><strong aria-label="Agenda for November 9, 2026">Nov 9, 2026</strong>
+      <a href="https://example.test/short?html=true">Agenda</a>
+      <a href="https://example.test/packet">Agenda Packet</a>
+      </td>
+    </tr></table>
+    """
+    http = client_for({
+        "AgendaCenter": httpx.Response(200, text=listing),
+        "short": httpx.Response(200, text="<p>Agenda</p>", headers={"content-type": "text/html"}),
+        "packet": httpx.Response(200, text="<p>" + ("license plate reader contract. " * 40) + "</p>", headers={"content-type": "text/html"}),
+    })
+    docs = CivicPlusCollector().collect(
+        {"id": "marietta-meetings", "url": "https://example.test/AgendaCenter", "mode": "agenda_center"},
+        since=date(2026, 11, 1),
+        until=date(2026, 11, 30),
+        http=http,
+    )
+    assert docs and "license plate reader contract" in docs[0].text and len(docs[0].text) >= 300
+    http.close()
+
+
+def test_onbase_packet_links_prefer_packets():
+    from monitor.collectors.generic_html import packet_links
+
+    html = """
+    <a href="/211agendaonline/Documents/Downloadfile/agenda.pdf?documentType=1&meetingId=10">Agenda</a>
+    <a href="/211agendaonline/Documents/Downloadfile/packet.pdf?documentType=5&meetingId=10">Agenda Packet</a>
+    <a href="/211agendaonline/Documents/Downloadfile/packet2.pdf?documentType=5&meetingId=11">Agenda Packet</a>
+    """
+    found = packet_links(html, "https://dunwoodyga.hylandcloud.com/211agendaonline/Meetings")
+    assert [item[0] for item in found] == ["11", "10"]
+    assert found[1][1].endswith("packet.pdf?documentType=5&meetingId=10")
+
+
+def test_legistar_uses_event_items_when_the_pdf_is_disallowed():
+    def response_for(url: str):
+        if "files.test" in url and url.endswith("robots.txt"):
+            return httpx.Response(200, text="User-agent: *\nDisallow: /\n")
+        if url.endswith("robots.txt"):
+            return httpx.Response(200, text="User-agent: *\nAllow: /\n")
+        if url.endswith("/eventitems"):
+            return httpx.Response(200, json=[{"EventItemTitle": "Flock Safety camera agreement"}])
+        if "/events" in url:
+            return httpx.Response(200, json=[{"EventId": 7, "EventGuid": "abc", "EventDate": "2026-11-01T00:00:00", "EventBodyName": "Council", "EventAgendaFile": "https://files.test/agenda.pdf"}])
+        return httpx.Response(404, text=url)
+
+    from monitor.collectors.legistar import LegistarCollector
+
+    http = HttpClient(transport=httpx.MockTransport(lambda request: response_for(str(request.url))), sleep=lambda _s: None, min_delay=0)
+    docs = LegistarCollector().collect({"id": "dekalb-commission", "client": "dekalbcountyga"}, since=date(2026, 1, 1), until=TODAY, http=http)
+    assert docs and "Flock Safety camera agreement" in docs[0].text
+    assert "files.test" not in docs[0].url
+    http.close()
+
+
+def test_source_health_warns_when_a_bill_source_is_silent():
+    from monitor.digest import render_digest, source_health_lines
+
+    lines = source_health_lines(
+        {"ga-bills": {"fetched": 3, "hits": 0, "signals": 0}, "eff-news": {"fetched": 0, "hits": 0, "signals": 0}},
+        [{"id": "ga-bills", "doc_type": "bill"}, {"id": "eff-news", "doc_type": "news"}],
+        [],
+        [],
+    )
+    assert any(line.startswith("warning ga-bills:") for line in lines)
+    assert not any(line.startswith("warning eff-news:") for line in lines)
+    subject, body = render_digest(
+        [{"id": 1, "document_id": 1, "score": 50, "signal_type": "legislation_event", "summary": "A bill moved.", "quote": "quote", "agency_id": None}],
+        documents={1: {"url": "https://example.test/bill"}},
+        agencies={},
+        run_errors=[],
+        sources_checked=2,
+        today=TODAY,
+        source_health=lines,
+    )
+    assert "SOURCE HEALTH" in body
+    assert "warning ga-bills:" in body
+    assert subject.startswith("ALPR signals:")
 
 
 def test_context_terms_match_agency_agendas_only(tmp_path):
@@ -1529,7 +1687,7 @@ def test_lookback_reclassifies_stored_documents_without_duplicate_signals(tmp_pa
     )
     output = capsys.readouterr().out
     assert "prefilter_hits: 1" in output
-    assert "source marietta-news: fetched 0, in_window 0, hits 1" in output
+    assert "source marietta-news: fetched 0, prefilter 1, signals 1" in output
     assert store.conn.execute("SELECT COUNT(*) AS n FROM signals").fetchone()["n"] == 1
     assert sent and "Backfill: last 40 days" in sent[0]
     execute(

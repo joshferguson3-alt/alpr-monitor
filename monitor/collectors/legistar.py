@@ -12,7 +12,7 @@ from datetime import date
 from urllib.parse import quote
 
 from monitor.collectors.base import RawDocument
-from monitor.http import HttpClient
+from monitor.http import HttpClient, RobotsDenied
 from monitor.pdftext import extract_pdf_text
 
 
@@ -36,14 +36,25 @@ class LegistarCollector:
         for event in events:
             file_url = event.get("EventAgendaFile") or ""
             event_id = event.get("EventId")
-            public = file_url or f"https://{client}.legistar.com/MeetingDetail.aspx?ID={event_id}&GUID={event.get('EventGuid')}"
-            if not file_url:
-                continue
-            body = http.get(file_url)
-            if body.content[:4] == b"%PDF" or "pdf" in body.headers.get("content-type", ""):
-                text = extract_pdf_text(body.content)
-            else:
-                text = body.text
+            public = (
+                f"https://{client}.legistar.com/MeetingDetail.aspx?ID={event_id}&GUID={event.get('EventGuid')}"
+            )
+            text = ""
+            if file_url:
+                try:
+                    body = http.get(file_url)
+                except RobotsDenied:
+                    body = None
+                if body is not None:
+                    if body.content[:4] == b"%PDF" or "pdf" in body.headers.get("content-type", ""):
+                        text = extract_pdf_text(body.content)
+                    else:
+                        text = body.text
+                    public = file_url
+            if len(text.strip()) < 300:
+                items = _event_items(http, client, event_id)
+                if items:
+                    text = (text + "\n" + items).strip()
             if not text.strip():
                 continue
             published = (event.get("EventDate") or "")[:10] or None
@@ -61,3 +72,23 @@ class LegistarCollector:
             if len(documents) >= int(source.get("max_docs") or 8):
                 break
         return documents
+
+
+def _event_items(http: HttpClient, client: str, event_id) -> str:
+    if not event_id:
+        return ""
+    try:
+        payload = http.get(f"https://webapi.legistar.com/v1/{client}/events/{event_id}/eventitems").json()
+    except Exception:
+        return ""
+    if isinstance(payload, dict):
+        payload = payload.get("value") or []
+    lines = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        parts = [item.get("EventItemTitle") or "", item.get("EventItemAgendaNote") or "", item.get("EventItemActionText") or ""]
+        line = " ".join(part.strip() for part in parts if part and str(part).strip())
+        if line:
+            lines.append(line)
+    return "\n".join(lines)

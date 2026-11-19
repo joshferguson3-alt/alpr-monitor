@@ -25,6 +25,8 @@ class RawDocument:
     published_at: str | None
     doc_type: str
     text: str
+    # A search hit whose full text could not be fetched still goes to classification.
+    force_prefilter: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -34,6 +36,7 @@ class RawDocument:
             "published_at": self.published_at,
             "doc_type": self.doc_type,
             "text": self.text,
+            "force_prefilter": self.force_prefilter,
         }
 
 

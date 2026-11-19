@@ -24,7 +24,14 @@ USER_AGENT = (
 INCUMBENT_VENDOR = "flock"
 
 # States the registry is designed to cover.
-COVERED_STATES = {"GA", "TN", "AL", "FL", "SC", "NC"}
+COVERED_STATES = {"AL", "FL", "GA", "KY", "LA", "MS", "NC", "SC", "TN", "VA"}
+
+# Shared bill and docket search. LegiScan's public search accepts OR.
+BILL_QUERY = (
+    '"license plate reader" OR "license plate recognition" OR "automated license plate" '
+    'OR "plate reader" OR ALPR OR "Flock Safety" OR "Flock Group" '
+    'OR "vehicle location data" OR "location surveillance"'
+)
 
 DIGEST_RECIPIENT = "josh.ferguson3@gmail.com"
 

@@ -27,11 +27,11 @@ from monitor.collectors.rss import RssCollector
 from monitor.collectors.base import MissingKeyError
 from monitor.collectors.youtube import YouTubeCollector
 from monitor.constants import CLASSIFY_DOC_CAP, CLASSIFY_WORKERS, PASSAGE_CAP, RUN_BUDGET_SECONDS
-from monitor.digest import deliver, render_digest
+from monitor.digest import deliver, render_digest, source_health_lines
 from monitor.http import HttpClient, RobotsDenied
 from monitor.notion_sync import NotionSync, client_from_env, is_object_not_found
 from monitor.passages import extract_passages
-from monitor.prefilter import passes
+from monitor.prefilter import Hit, passes
 from monitor.registry import Registry, load_registry
 from monitor.resolve import resolve_agency, resolve_organization, resolve_person
 from monitor.score import score_signal
@@ -313,7 +313,7 @@ def execute(
         return found
 
     source_stats: dict[str, dict[str, int]] = {
-        source["id"]: {"fetched": 0, "in_window": 0, "hits": 0} for source in due
+        source["id"]: {"fetched": 0, "in_window": 0, "hits": 0, "signals": 0} for source in due
     }
     youtube_sources = []
     for source in due:
@@ -390,6 +390,8 @@ def execute(
             and doc.get("doc_type") in {"agenda", "minutes", "packet"}
         )
         keyword_hits = passes(doc.get("text") or "", registry.keywords, include_context=include_context)
+        if not keyword_hits and doc.get("force_prefilter") and (doc.get("text") or "").strip():
+            keyword_hits = [Hit(0, min(len(doc["text"]), 80), "query hit", True)]
         if not keyword_hits:
             if doc.get("id"):
                 store.mark_classified(doc["id"])
@@ -475,6 +477,8 @@ def execute(
                     signal_id = _remember_signal(store, signal)
                     if signal_id is None:
                         continue
+                    if meta.get("source_id") in source_stats:
+                        source_stats[meta["source_id"]]["signals"] += 1
                     signal["id"] = signal_id
                     signal["created_at"] = utcnow()
                     created_ids.append(signal_id)
@@ -501,6 +505,8 @@ def execute(
                         shift_id = _remember_signal(store, shift)
                         if shift_id is not None:
                             created_ids.append(shift_id)
+                            if meta.get("source_id") in source_stats:
+                                source_stats[meta["source_id"]]["signals"] += 1
                 store.mark_classified(doc["id"])
                 done += 1
                 if done % 25 == 0 or done == len(to_classify):
@@ -566,11 +572,14 @@ def execute(
                     meta = {
                         "document_id": stored["id"],
                         "entity": stored.get("entity"),
+                        "source_id": stored.get("source_id"),
                     }
                     signal, subject, stance_changed = _build_signal(result, meta, registry, store, today)
                     signal_id = _remember_signal(store, signal)
                     if signal_id is None:
                         continue
+                    if meta.get("source_id") in source_stats:
+                        source_stats[meta["source_id"]]["signals"] += 1
                     created_ids.append(signal_id)
                     if subject and signal.get("stance"):
                         store.insert_stance(subject[0], subject[1], signal["stance"], signal_id)
@@ -595,6 +604,7 @@ def execute(
         else:
             _sync_notion(notion, store, registry, _signals_for_notion(store, signals), today, errors)
 
+    health = source_health_lines(source_stats, due, skipped, errors)
     if publish and send_email:
         documents = {}
         for signal in signals:
@@ -613,6 +623,7 @@ def execute(
             weekly=weekly,
             recent_signals=recent,
             lookback_days=lookback_days,
+            source_health=health,
         )
         if rendered:
             subject, body = rendered
@@ -637,6 +648,7 @@ def execute(
         passages_classified=passages_classified,
         signals_created=len(created_ids),
         errors=errors,
+        source_health=health,
     )
     print(f"agencies: {len(registry.agencies)}")
     print(f"sources: {len(registry.sources)}")
@@ -649,10 +661,8 @@ def execute(
     )
     prefilter_hits = sum(item["hits"] for item in source_stats.values())
     print(f"prefilter_hits: {prefilter_hits}")
-    for source_id, item in source_stats.items():
-        print(
-            f"source {source_id}: fetched {item['fetched']}, in_window {item['in_window']}, hits {item['hits']}"
-        )
+    for line in health:
+        print(line)
     print(f"skipped: {len(skipped)}")
     for item in skipped:
         print(f"skipped {item['source_id']}: {item['message']}")
@@ -801,6 +811,7 @@ def publish_only(
             weekly=today.weekday() == 0,
             recent_signals=[dict(row) for row in store.recent_signals(90)],
             lookback_days=lookback_days,
+            source_health=store.latest_source_health(),
         )
         if rendered:
             subject, body = rendered

@@ -13,6 +13,39 @@ from monitor.score import account_temperature
 SendFunc = Callable[[str, str, str], None]
 
 
+def source_health_lines(
+    stats: dict[str, dict[str, int]],
+    sources: list[dict[str, Any]],
+    skipped: list[dict[str, str]],
+    errors: list[dict[str, str]],
+) -> list[str]:
+    """Per-source counts, plus a warning when a core source is silent or failed."""
+    skipped_by_id = {item["source_id"]: item.get("message") or "skipped" for item in skipped}
+    errors_by_id: dict[str, str] = {}
+    for item in errors:
+        errors_by_id.setdefault(item.get("source_id") or "", item.get("message") or "error")
+    lines: list[str] = []
+    for source in sources:
+        source_id = source["id"]
+        item = stats.get(source_id) or {"fetched": 0, "hits": 0, "signals": 0}
+        if source_id in skipped_by_id:
+            lines.append(f"source {source_id}: fetched 0, prefilter 0, signals 0, skipped ({skipped_by_id[source_id]})")
+            continue
+        lines.append(
+            f"source {source_id}: fetched {item.get('fetched', 0)}, "
+            f"prefilter {item.get('hits', 0)}, signals {item.get('signals', 0)}"
+        )
+        message = errors_by_id.get(source_id)
+        core = source.get("doc_type") in {"agenda", "minutes", "packet", "bill", "court"}
+        if message:
+            lines.append(f"warning {source_id}: {message}")
+        elif core and item.get("fetched", 0) == 0:
+            lines.append(f"warning {source_id}: returned 0 documents")
+        elif core and item.get("fetched", 0) > 0 and item.get("hits", 0) == 0:
+            lines.append(f"warning {source_id}: documents fetched but 0 passed the prefilter")
+    return lines
+
+
 def _parse_date(value: str | None) -> date | None:
     if not value:
         return None
@@ -33,6 +66,7 @@ def render_digest(
     weekly: bool = False,
     recent_signals: list[dict[str, Any]] | None = None,
     lookback_days: int | None = None,
+    source_health: list[str] | None = None,
 ) -> tuple[str, str] | None:
     """Return (subject, body) when at least one signal scores 40 or higher."""
     visible = [signal for signal in signals if (signal.get("score") or 0) >= 20]
@@ -92,6 +126,9 @@ def render_digest(
     sections.append(
         f"RUN HEALTH\n{sources_checked} sources checked, {len(failed)} failed ({detail})"
     )
+    sections.append("")
+    sections.append("SOURCE HEALTH")
+    sections.extend(source_health or ["(none)"])
     subject = f"ALPR signals: {len(act)} act now, {len(watch)} watch ({today.isoformat()})"
     if lookback_days:
         subject = f"{subject} Backfill: last {lookback_days} days"

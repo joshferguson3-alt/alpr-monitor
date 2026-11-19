@@ -14,7 +14,18 @@ from datetime import date
 from monitor.collectors.base import MissingKeyError, RawDocument
 from monitor.http import HttpClient
 
-JURISDICTION = {"GA": "Georgia", "TN": "Tennessee"}
+JURISDICTION = {
+    "AL": "Alabama",
+    "FL": "Florida",
+    "GA": "Georgia",
+    "KY": "Kentucky",
+    "LA": "Louisiana",
+    "MS": "Mississippi",
+    "NC": "North Carolina",
+    "SC": "South Carolina",
+    "TN": "Tennessee",
+    "VA": "Virginia",
+}
 
 
 class OpenStatesCollector:

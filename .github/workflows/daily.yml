@@ -5,10 +5,14 @@ on:
     # GitHub Actions cron is UTC and does not follow daylight saving time.
     # 10:00 UTC is 6:00 AM Eastern Daylight Time.
     # 11:00 UTC is 6:00 AM Eastern Standard Time.
-    # A scheduled run collects only when the America/New_York hour is 6.
+    # 16:00 and 21:00 UTC are backups when GitHub starts the morning cron late.
+    # A scheduled run collects once on or after 6:00 AM Eastern. A later cron
+    # the same New York day logs that today's run already started.
     # workflow_dispatch sets ALPR_SCHEDULED to 0, so a manual run always proceeds.
     - cron: "0 10 * * *"
     - cron: "0 11 * * *"
+    - cron: "0 16 * * *"
+    - cron: "0 21 * * *"
   workflow_dispatch:
     inputs:
       live_tests:

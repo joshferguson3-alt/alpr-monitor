@@ -359,6 +359,20 @@ def test_privacy_drops_resident_names():
     )
     assert result["speaker_name"] is None
     assert "Jane Resident" not in (result.get("summary") or "")
+    official = finalize(
+        {
+            "is_relevant": True,
+            "signal_type": "public_sentiment",
+            "summary": "National Policing Institute CEO Jane Executive explains the survey.",
+            "speaker_name": "Jane Executive",
+            "speaker_role": "CEO",
+            "quote": "A resident said the cameras should be removed.",
+            "confidence": 0.9,
+        },
+        passage,
+    )
+    assert official["speaker_name"] == "Jane Executive"
+    assert "a resident" not in (official.get("summary") or "")
 
 
 def test_primegov_robots_skip_does_not_stop_the_run(tmp_path, capsys):
@@ -1093,13 +1107,18 @@ def test_manual_run_skips_the_six_am_gate(monkeypatch):
 
     from monitor.run import scheduled_hour_blocks
 
-    noon = datetime(2026, 11, 12, 12, tzinfo=ZoneInfo("America/New_York"))
+    five = datetime(2026, 11, 12, 5, tzinfo=ZoneInfo("America/New_York"))
     six = datetime(2026, 11, 12, 6, tzinfo=ZoneInfo("America/New_York"))
+    noon = datetime(2026, 11, 12, 12, tzinfo=ZoneInfo("America/New_York"))
     monkeypatch.setenv("ALPR_SCHEDULED", "0")
     assert scheduled_hour_blocks(noon) is False
     monkeypatch.setenv("ALPR_SCHEDULED", "1")
-    assert scheduled_hour_blocks(noon) is True
+    assert scheduled_hour_blocks(five) is True
     assert scheduled_hour_blocks(six) is False
+    assert scheduled_hour_blocks(noon) is False
+    assert scheduled_hour_blocks(noon, "2026-11-12T11:05:00+00:00") is True
+    assert scheduled_hour_blocks(noon, "2026-11-11T11:05:00+00:00") is False
+    assert scheduled_hour_blocks(noon, "2026-11-12T08:00:00+00:00") is False
 
 
 def test_missing_notion_database_ids_still_send_the_digest(tmp_path, monkeypatch):

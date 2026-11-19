@@ -169,7 +169,7 @@ def _build_signal(result: dict, meta: dict, registry: Registry, store: Store, to
     if not org_id and entity in registry.organizations_by_id:
         org_id = entity
         org_flag = False
-    needs = 1 if result.get("needs_review") or agency_flag or (person_flag and result.get("speaker_name")) or (org_flag and result.get("organization")) else 0
+    needs = 1 if result.get("needs_review") else 0
     counts = result.get("resident_counts") or {}
     if not isinstance(counts, dict):
         counts = {}
@@ -197,8 +197,6 @@ def _build_signal(result: dict, meta: dict, registry: Registry, store: Store, to
         "confidence": result.get("confidence") if result.get("confidence") is not None else 0,
         "needs_review": needs,
     }
-    if not signal["agency_id"] and not signal["person_id"] and not signal["organization_id"]:
-        signal["needs_review"] = 1
     agency = registry.agencies_by_id.get(agency_id) if agency_id else None
     person = registry.people_by_id.get(person_id) if person_id else None
     subject = None
@@ -399,8 +397,14 @@ def execute(
             passed_agendas.append(doc)
         hit_docs.append(doc)
 
-    hit_docs.sort(key=lambda doc: doc.get("published_at") or "", reverse=True)
-    to_classify = hit_docs[:classify_limit]
+    first_ids = {source["id"] for source in due if source.get("classify_first")}
+    for doc in hit_docs:
+        if doc.get("source_id") in first_ids:
+            doc["_classify_first"] = True
+    pinned = [doc for doc in hit_docs if doc.get("_classify_first")]
+    rest = [doc for doc in hit_docs if not doc.get("_classify_first")]
+    rest.sort(key=lambda doc: doc.get("published_at") or "", reverse=True)
+    to_classify = pinned + rest[:classify_limit]
     deferred = len(hit_docs) - len(to_classify)
     if deferred:
         print(f"deferred {deferred} prefilter hits to the next run")
@@ -634,6 +638,9 @@ def execute(
     print(f"docs_new: {len(new_docs)}")
     print(f"passages_classified: {passages_classified}")
     print(f"signals_created: {len(created_ids)}")
+    print(
+        f"collected: documents fetched {docs_fetched}, new {len(new_docs)}, signals {len(created_ids)}"
+    )
     prefilter_hits = sum(item["hits"] for item in source_stats.values())
     print(f"prefilter_hits: {prefilter_hits}")
     for source_id, item in source_stats.items():
@@ -649,12 +656,43 @@ def execute(
     return 0
 
 
-def scheduled_hour_blocks(now: datetime | None = None) -> bool:
-    """Scheduled runs wait for 6:00 AM Eastern. workflow_dispatch does not set ALPR_SCHEDULED."""
+def _as_eastern(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=ZoneInfo("America/New_York"))
+    return value.astimezone(ZoneInfo("America/New_York"))
+
+
+def _parse_started_at(value: str | None) -> datetime | None:
+    if not value or not str(value).strip():
+        return None
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo("UTC"))
+    return parsed
+
+
+def scheduled_hour_blocks(now: datetime | None = None, latest_started_at: str | None = None) -> bool:
+    """One scheduled collection on or after 6:00 AM Eastern, even if GitHub starts late.
+
+    A manual run does not set ALPR_SCHEDULED. Before 6 AM Eastern, wait.
+    After 6, skip only when a run already started today at or after 6 AM Eastern.
+    """
     if os.environ.get("ALPR_SCHEDULED") != "1":
         return False
-    current = now or datetime.now(ZoneInfo("America/New_York"))
-    return current.hour != 6
+    current = _as_eastern(now or datetime.now(ZoneInfo("America/New_York")))
+    if current.hour < 6:
+        return True
+    started = _parse_started_at(latest_started_at)
+    if started is None:
+        return False
+    started_ny = started.astimezone(ZoneInfo("America/New_York"))
+    return started_ny.date() == current.date() and started_ny.hour >= 6
 
 
 def _signals_for_notion(store: Store, fresh: list[dict]) -> list[dict]:
@@ -802,10 +840,19 @@ def main(argv: list[str] | None = None) -> int:
         if raw_lookback:
             lookback_days = int(raw_lookback)
 
-    if not args.dry_run and not args.publish_only and scheduled_hour_blocks():
+    if not args.dry_run and not args.publish_only and os.environ.get("ALPR_SCHEDULED") == "1":
+        gate = Store(args.db)
+        latest = gate.latest_started_at()
+        gate.close()
+        if scheduled_hour_blocks(latest_started_at=latest):
+            hour = datetime.now(ZoneInfo("America/New_York")).hour
+            print(
+                f"Scheduled run skipped: America/New_York hour is {hour}; "
+                "before 6 AM or today's run already started."
+            )
+            return 0
         hour = datetime.now(ZoneInfo("America/New_York")).hour
-        print(f"Scheduled run skipped: America/New_York hour is {hour}, not 6.")
-        return 0
+        print(f"Scheduled run collecting. America/New_York hour is {hour}.")
     if not args.dry_run and os.environ.get("ALPR_SCHEDULED") != "1":
         print("Manual run: 6 AM Eastern gate skipped.")
 

@@ -29,6 +29,21 @@ class GenericHtmlCollector:
                 )
             ] if text.strip() else []
         soup = BeautifulSoup(response.text, "html.parser")
+        if source.get("page_is_document"):
+            text = soup.get_text("\n", strip=True)
+            title = source.get("title") or (soup.title.get_text(" ", strip=True) if soup.title else source["id"])
+            if not text.strip():
+                return []
+            return [
+                RawDocument(
+                    source_id=source["id"],
+                    url=source["url"],
+                    title=str(title)[:300],
+                    published_at=source.get("published_at"),
+                    doc_type=source.get("doc_type") or "news",
+                    text=text[:200_000],
+                )
+            ]
         selectors = source.get("selectors") or {}
         item_sel = selectors.get("item") or "article, li, .item"
         title_sel = selectors.get("title") or "a"

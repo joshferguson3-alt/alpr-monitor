@@ -19,7 +19,9 @@
   meeting_platform: primegov
   meeting_url: https://brookhavenga.primegov.com/public/portal
   youtube_channel: null
-  alpr_vendor: unknown
+  # Flock camera program: https://www.flocksafety.com/blog/how-the-city-of-brookhaven-is-leveraging-a-suite-of-technology-to-promote-community-safety
+  # https://atlasofsurveillance.org/a/aos008247-brookhaven-police-department-automated-license-plate-readers
+  alpr_vendor: flock
   alpr_camera_count: null
   flock_transparency_url: null
   contract_end_date: null
@@ -41,9 +43,12 @@
   meeting_platform: other
   meeting_url: https://dunwoodyga.hylandcloud.com/211agendaonline/Meetings
   youtube_channel: null
-  alpr_vendor: unknown
-  alpr_camera_count: null
-  flock_transparency_url: null
+  # Council approved a modified Flock MSA on 2026-04-13 after two postponed votes.
+  # https://www.wabe.org/dunwoody-was-an-early-adopter-of-flock-safety-now-its-reevaluating-that-partnership/
+  # https://roughdraftatlanta.com/2026/04/14/dunwoody-council-flock-agreement/
+  alpr_vendor: flock
+  alpr_camera_count: 80
+  flock_transparency_url: https://transparency.flocksafety.com/dunwoody-ga-pd
   contract_end_date: null
   legislative_districts: {state_house: [], state_senate: [], us_house: []}
   aliases: ["Dunwoody PD", "Dunwoody Police"]
@@ -60,7 +65,9 @@
   meeting_platform: civicplus
   meeting_url: https://sandyspringsga.portal.civicclerk.com/
   youtube_channel: null
-  alpr_vendor: unknown
+  # Flock and Genetec, bought 2019.
+  # https://atlasofsurveillance.org/a/aos008015-sandy-springs-police-department-automated-license-plate-readers
+  alpr_vendor: flock
   alpr_camera_count: null
   flock_transparency_url: null
   contract_end_date: null
@@ -78,6 +85,8 @@
   meeting_platform: civicplus
   meeting_url: https://www.mariettaga.gov/AgendaCenter
   youtube_channel: null
+  # Stays unknown. Gateway Marietta CID installed Flock cameras in 2019, which is not the police department:
+  # https://www.flocksafety.com/blog/more-license-plate-reading-cameras-coming-to-marietta
   alpr_vendor: unknown
   alpr_camera_count: null
   flock_transparency_url: null
@@ -101,6 +110,7 @@
   meeting_platform: other
   meeting_url: https://roswellcityga.iqm2.com/Citizens/Default.aspx
   youtube_channel: https://www.youtube.com/CityofRoswell
+  # No public source found on 2026-11-18. Check by hand.
   alpr_vendor: unknown
   alpr_camera_count: null
   flock_transparency_url: null
@@ -124,7 +134,9 @@
   meeting_platform: other
   meeting_url: https://johnscreekga.granicus.com/ViewPublisher.php?view_id=1
   youtube_channel: https://www.youtube.com/johnscreekgagov
-  alpr_vendor: unknown
+  # 2019 agreement to access neighborhood readers.
+  # https://atlasofsurveillance.org/a/aos008027-johns-creek-police-department-automated-license-plate-readers
+  alpr_vendor: flock
   alpr_camera_count: null
   flock_transparency_url: null
   contract_end_date: null

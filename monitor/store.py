@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -232,14 +233,34 @@ class Store:
         return row["stance"] if row else None
 
     def has_signal(self, document_id: int, signal_type: str, quote: str | None, summary: str) -> bool:
-        row = self.conn.execute(
-            """
-            SELECT 1 FROM signals
-            WHERE document_id = ? AND signal_type = ? AND ifnull(quote, '') = ? AND summary = ?
-            """,
-            (document_id, signal_type, quote or "", summary),
-        ).fetchone()
-        return row is not None
+        """True when this document already has the same kind of signal.
+
+        Quotes that contain one another count. A stance-shift row is not a
+        duplicate of the statement it was derived from.
+        """
+        def norm(value: str | None) -> str:
+            return re.sub(r"\s+", " ", (value or "")).strip().lower()
+
+        want_summary = norm(summary)
+        want_quote = norm(quote)
+        rows = self.conn.execute(
+            "SELECT quote, summary FROM signals WHERE document_id = ? AND signal_type = ?",
+            (document_id, signal_type),
+        )
+        for row in rows:
+            have_summary = norm(row["summary"])
+            have_shift = have_summary.startswith("stance shift:")
+            want_shift = want_summary.startswith("stance shift:")
+            if have_shift != want_shift:
+                continue
+            if have_summary == want_summary:
+                return True
+            have_quote = norm(row["quote"])
+            if not have_quote and not want_quote:
+                return True
+            if have_quote and want_quote and (have_quote in want_quote or want_quote in have_quote):
+                return True
+        return False
 
     def documents_without_signals(self, source_id: str, since: date, until: date) -> list[sqlite3.Row]:
         return list(

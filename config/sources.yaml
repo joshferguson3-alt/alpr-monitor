@@ -7,6 +7,9 @@
   url: https://brookhavenga.primegov.com/public/portal
   cadence: daily
   doc_type: agenda
+  # Live check 2026-11-19: robots.txt is "User-agent: * / Disallow: /". Left disabled.
+  enabled: false
+  skip_reason: "disabled, skipped (brookhavenga.primegov.com robots.txt Disallow: /)"
 
 - id: brookhaven-news
   collector: generic_html
@@ -25,6 +28,8 @@
   url: https://dunwoodyga.hylandcloud.com/211agendaonline/Meetings
   cadence: daily
   doc_type: agenda
+  # Live check 2026-11-19: HTTP 200, robots.txt 404 (allowed). The page is a search
+  # form and does not list the April 13, 2026 agenda, so that vote is collected below.
   link_contains: ViewMeeting
   selectors:
     item: "a"
@@ -57,7 +62,9 @@
   url: https://roswellcityga.iqm2.com/Citizens/Default.aspx
   cadence: daily
   doc_type: agenda
-  # GitHub Actions still timed out after 60s plus one retry. Manual check.
+  # Live check 2026-11-19: homepage HTTP 200 and agendas are in the HTML.
+  # robots.txt allows the portal with Crawl-delay: 60, which still times out
+  # a GitHub Actions request. Left disabled.
   enabled: false
   skip_reason: "disabled, skipped (roswellcityga.iqm2.com timed out from GitHub Actions after 60s and one retry; check agendas by hand)"
   bodies:
@@ -89,6 +96,17 @@
   enabled: false
   skip_reason: "disabled, skipped (youtube.com/robots.txt Disallow: /feeds/videos.xml)"
 
+- id: dunwoody-flock-vote
+  collector: generic_html
+  entity: dunwoody-pd
+  url: https://roughdraftatlanta.com/2026/04/14/dunwoody-council-flock-agreement/
+  page_is_document: true
+  published_at: "2026-04-14"
+  title: Dunwoody City Council approves Flock Safety agreement
+  classify_first: true
+  cadence: daily
+  doc_type: news
+
 - id: ga-bills
   collector: legiscan
   state: GA
@@ -99,6 +117,62 @@
 - id: tn-bills
   collector: legiscan
   state: TN
+  query: license plate reader OR ALPR
+  cadence: daily
+  doc_type: bill
+
+- id: fl-bills
+  collector: legiscan
+  state: FL
+  query: license plate reader OR ALPR
+  cadence: daily
+  doc_type: bill
+
+- id: al-bills
+  collector: legiscan
+  state: AL
+  query: license plate reader OR ALPR
+  cadence: daily
+  doc_type: bill
+
+- id: sc-bills
+  collector: legiscan
+  state: SC
+  query: license plate reader OR ALPR
+  cadence: daily
+  doc_type: bill
+
+- id: nc-bills
+  collector: legiscan
+  state: NC
+  query: license plate reader OR ALPR
+  cadence: daily
+  doc_type: bill
+
+- id: ms-bills
+  collector: legiscan
+  state: MS
+  query: license plate reader OR ALPR
+  cadence: daily
+  doc_type: bill
+
+- id: la-bills
+  collector: legiscan
+  state: LA
+  query: license plate reader OR ALPR
+  cadence: daily
+  doc_type: bill
+
+- id: ky-bills
+  collector: legiscan
+  state: KY
+  query: license plate reader OR ALPR
+  cadence: daily
+  doc_type: bill
+
+- id: va-bills
+  collector: legiscan
+  state: VA
   query: license plate reader OR ALPR
   cadence: daily
   doc_type: bill
@@ -156,6 +230,54 @@
 - id: openstates-tn
   collector: openstates
   state: TN
+  cadence: monthly
+  doc_type: bill
+
+- id: openstates-fl
+  collector: openstates
+  state: FL
+  cadence: monthly
+  doc_type: bill
+
+- id: openstates-al
+  collector: openstates
+  state: AL
+  cadence: monthly
+  doc_type: bill
+
+- id: openstates-sc
+  collector: openstates
+  state: SC
+  cadence: monthly
+  doc_type: bill
+
+- id: openstates-nc
+  collector: openstates
+  state: NC
+  cadence: monthly
+  doc_type: bill
+
+- id: openstates-ms
+  collector: openstates
+  state: MS
+  cadence: monthly
+  doc_type: bill
+
+- id: openstates-la
+  collector: openstates
+  state: LA
+  cadence: monthly
+  doc_type: bill
+
+- id: openstates-ky
+  collector: openstates
+  state: KY
+  cadence: monthly
+  doc_type: bill
+
+- id: openstates-va
+  collector: openstates
+  state: VA
   cadence: monthly
   doc_type: bill
 

@@ -14,7 +14,10 @@ Return one JSON object and nothing else. Use only what the passage states.
 If a field is not stated, use an empty string, "none", -1, or an empty list.
 Never guess names, dates, or amounts.
 If the passage is not about ALPR or police surveillance cameras, set
-is_relevant to false and use those empty values for every other field."""
+is_relevant to false and use those empty values for every other field.
+Judge relevance against the source title. If the title is about a different
+subject and the ALPR mention is only a related-links list, a sidebar, a
+navigation menu, a footer, or an author bio, set is_relevant to false."""
 
 USER_TEMPLATE = """Source type: {doc_type}
 Source title: {title}
@@ -208,8 +211,9 @@ def quote_is_in_passage(quote: str | None, passage: str) -> bool:
 
 def apply_privacy(result: dict[str, Any]) -> dict[str, Any]:
     """Residents are counts and stance only. Never store their names."""
-    role = (result.get("speaker_role") or "").lower()
-    is_resident = "resident" in role or result.get("signal_type") == "public_sentiment"
+    role = (result.get("speaker_role") or "").strip().lower()
+    role_is_resident = bool(re.search(r"\b(resident|citizen|public comment(er)?|member of the public)\b", role))
+    is_resident = role_is_resident or (result.get("signal_type") == "public_sentiment" and not role)
     if is_resident and result.get("speaker_name"):
         name = result["speaker_name"]
         result["speaker_name"] = None
@@ -217,8 +221,6 @@ def apply_privacy(result: dict[str, Any]) -> dict[str, Any]:
             if result.get(field) and name in result[field]:
                 result[field] = result[field].replace(name, "a resident")
         result["needs_review"] = 1
-    if result.get("signal_type") == "public_sentiment":
-        result["speaker_name"] = None
     return result
 
 

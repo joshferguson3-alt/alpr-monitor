@@ -8,6 +8,7 @@ from datetime import date
 from typing import Any
 
 from monitor.constants import NOTION_VERSION, SIGNAL_TYPES
+from monitor.digest import signal_card
 from monitor.score import account_temperature
 
 SIGNAL_PROPERTIES = {
@@ -39,6 +40,15 @@ SIGNAL_PROPERTIES = {
     "Published": {"date": {}},
     "Needs review": {"checkbox": {}},
     "Signal ID": {"number": {"format": "number"}},
+    "ALPR stance": {
+        "select": {
+            "options": [
+                {"name": "Positive for ALPR"},
+                {"name": "Negative for ALPR"},
+                {"name": "Mixed for ALPR"},
+            ]
+        }
+    },
 }
 
 AGENCY_PROPERTIES = {
@@ -112,6 +122,7 @@ class NotionSync:
         self._signals_ds: str | None = None
         self._agencies_ds: str | None = None
         self.notes: list[str] = []
+        self._stance_ready: bool | None = None
 
     def enabled(self) -> bool:
         return bool(self.client and (self.signals_db or self.agencies_db))
@@ -148,19 +159,24 @@ class NotionSync:
         if not data_source:
             return None
         properties = self._signal_properties(signal, document, agency)
+        blocks = self._signal_blocks(signal, document)
         existing = self._find_number(data_source, "Signal ID", int(signal["id"]))
         try:
             if existing:
                 page = self.client.pages.update(page_id=existing, properties=properties)
+                page_id = page.get("id") or existing
             else:
                 page = self.client.pages.create(
                     parent={"type": "data_source_id", "data_source_id": data_source},
                     properties=properties,
                 )
+                page_id = page.get("id")
         except Exception as exc:
             self.notes.append(str(exc)[:500])
             return None
-        return page.get("id")
+        if page_id:
+            self._replace_page_body(page_id, blocks)
+        return page_id
 
     def upsert_agencies(self, agencies: list[dict], signals: list[dict], today: date) -> None:
         data_source = self.agencies_data_source()
@@ -208,45 +224,110 @@ class NotionSync:
                 continue
 
     def _signal_properties(self, signal: dict, document: dict, agency: dict | None) -> dict:
-        vendors = signal.get("vendors") or []
-        if isinstance(vendors, str):
-            import json
-            vendors = json.loads(vendors)
+        card = signal_card(signal, (document or {}).get("url") or "")
         properties = {
-            "Summary": _title(signal.get("summary") or "Signal"),
-            "Tier": _select(signal.get("tier")),
-            "Score": {"number": signal.get("score")},
-            "Type": _select(signal.get("signal_type")),
-            "Speaker": _rich(signal.get("speaker_name_raw")),
-            "Role": _rich(signal.get("speaker_role")),
-            "Stance": _select(signal.get("stance")),
-            "Key date meaning": _rich(signal.get("key_date_meaning")),
-            "Bill": _rich(signal.get("bill_id")),
-            "Quote": _rich(signal.get("quote")),
-            "Source": {"url": document.get("url")} if document.get("url") else None,
-            "Key date": _date(signal.get("key_date")),
-            "Published": _date(document.get("published_at")),
-            "Needs review": {"checkbox": bool(signal.get("needs_review"))},
+            "Summary": _title(card["headline"]),
+            "Quote": _rich(f"\"{card['quote']}\"" if card["quote"] else None),
+            "Source": {"url": card["url"]} if card["url"] else None,
             "Signal ID": {"number": int(signal["id"])},
+            "Published": _date(document.get("published_at")),
         }
-        if signal.get("dollar_amount") is not None:
-            properties["Amount"] = {"number": signal["dollar_amount"]}
-        if signal.get("camera_count") is not None:
-            properties["Cameras"] = {"number": signal["camera_count"]}
+        if self._ensure_stance_property():
+            properties["ALPR stance"] = _select(card["stance"])
         if agency:
             properties["Agency"] = _select(agency["name"])
             properties["State"] = _select(agency.get("state"))
         elif signal.get("agency_name_raw"):
             properties["Agency"] = _select(signal["agency_name_raw"])
-        if vendors:
-            names = []
-            for vendor in vendors:
-                name = sanitize_option(vendor)
-                if name and name not in names:
-                    names.append(name)
-            if names:
-                properties["Vendors"] = {"multi_select": [{"name": name} for name in names]}
         return {key: value for key, value in properties.items() if value is not None}
+
+    def _signal_blocks(self, signal: dict, document: dict) -> list[dict]:
+        card = signal_card(signal, (document or {}).get("url") or "")
+        blocks = [
+            {
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [
+                        {
+                            "type": "text",
+                            "text": {"content": card["stance"]},
+                            "annotations": {"bold": True},
+                        },
+                        {"type": "text", "text": {"content": " — " + card["headline"]}},
+                    ]
+                },
+            }
+        ]
+        if card["quote"]:
+            blocks.append(
+                {
+                    "object": "block",
+                    "type": "quote",
+                    "quote": {"rich_text": [{"type": "text", "text": {"content": f"\"{card['quote']}\""}}]},
+                }
+            )
+        if card["url"]:
+            blocks.append(
+                {
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [
+                            {
+                                "type": "text",
+                                "text": {"content": card["url"], "link": {"url": card["url"]}},
+                            }
+                        ]
+                    }
+                }
+            )
+        return blocks
+
+    def _ensure_stance_property(self) -> bool:
+        if self._stance_ready is not None:
+            return self._stance_ready
+        data_source = self.signals_data_source()
+        updater = getattr(self.client.data_sources, "update", None) if self.client else None
+        if not data_source or updater is None:
+            self._stance_ready = False
+            return False
+        try:
+            updater(
+                data_source_id=data_source,
+                properties={
+                    "ALPR stance": {
+                        "select": {
+                            "options": [
+                                {"name": "Positive for ALPR"},
+                                {"name": "Negative for ALPR"},
+                                {"name": "Mixed for ALPR"},
+                            ]
+                        }
+                    }
+                },
+            )
+        except Exception:
+            self._stance_ready = False
+            return False
+        self._stance_ready = True
+        return True
+
+    def _replace_page_body(self, page_id: str, blocks: list[dict]) -> None:
+        """Replace the page body. The database row itself is left in place."""
+        blocks_api = getattr(self.client, "blocks", None)
+        if blocks_api is None or not blocks:
+            return
+        try:
+            existing = blocks_api.children.list(block_id=page_id)
+            for child in existing.get("results") or []:
+                if child.get("type") in {"child_page", "child_database"}:
+                    continue
+                if child.get("id"):
+                    blocks_api.delete(block_id=child["id"])
+            blocks_api.children.append(block_id=page_id, children=blocks)
+        except Exception as exc:
+            self.notes.append(str(exc)[:500])
 
     def _find_number(self, data_source_id: str, prop: str, value: int) -> str | None:
         result = self.client.data_sources.query(

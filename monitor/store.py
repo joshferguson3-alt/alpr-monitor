@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS signals (
   tier TEXT,
   needs_review INTEGER NOT NULL DEFAULT 0,
   notion_page_id TEXT,
+  alpr_stance TEXT,
   created_at TEXT NOT NULL
 );
 
@@ -106,6 +107,9 @@ class Store:
         run_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(runs)")}
         if "source_health" not in run_columns:
             self.conn.execute("ALTER TABLE runs ADD COLUMN source_health TEXT")
+        signal_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(signals)")}
+        if "alpr_stance" not in signal_columns:
+            self.conn.execute("ALTER TABLE signals ADD COLUMN alpr_stance TEXT")
 
     def close(self) -> None:
         self.conn.close()
@@ -363,7 +367,7 @@ class Store:
             UPDATE signals SET
               document_id = ?, signal_type = ?, summary = ?, quote = ?, confidence = ?,
               score = ?, tier = ?, key_date = ?, key_date_meaning = ?, bill_id = ?,
-              needs_review = ?, created_at = ?
+              needs_review = ?, alpr_stance = ?, created_at = ?
             WHERE id = ?
             """,
             (
@@ -378,6 +382,7 @@ class Store:
                 signal.get("key_date_meaning"),
                 signal.get("bill_id"),
                 int(signal.get("needs_review") or 0),
+                signal.get("alpr_stance"),
                 utcnow(),
                 signal_id,
             ),
@@ -392,8 +397,8 @@ class Store:
               speaker_name_raw, speaker_role, organization_id, vendors, stance, stance_target,
               resident_support, resident_oppose, key_date, key_date_meaning, dollar_amount,
               camera_count, bill_id, quote, confidence, score, tier, needs_review,
-              notion_page_id, created_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              notion_page_id, alpr_stance, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 signal["document_id"],
@@ -421,6 +426,7 @@ class Store:
                 signal.get("tier"),
                 int(signal.get("needs_review") or 0),
                 signal.get("notion_page_id"),
+                signal.get("alpr_stance"),
                 signal.get("created_at") or utcnow(),
             ),
         )

@@ -148,6 +148,8 @@ def score_signal(
                 score = max(score, 48)
             elif kind == "passed":
                 score = max(score, 42)
+    if signal_type == "legislation_event" and is_local_appropriation(blob):
+        score = min(score, 35)
     return score, tier_for(score)
 
 

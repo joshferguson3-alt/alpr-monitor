@@ -1,13 +1,16 @@
-"""Plain-text daily digest. Sent only to the configured recipient."""
+"""Daily digest. Sent only to the configured recipient."""
 
 from __future__ import annotations
 
+import html
+import re
 import smtplib
 from datetime import date, datetime, timedelta
 from email.message import EmailMessage
 from typing import Any, Callable
 
 from monitor.constants import DIGEST_RECIPIENT
+from monitor.impact import MIXED, badge, derive_alpr_stance
 from monitor.score import account_temperature
 
 SendFunc = Callable[[str, str, str], None]
@@ -56,6 +59,54 @@ def _parse_date(value: str | None) -> date | None:
         return None
 
 
+def _clean(value: str | None) -> str:
+    text = re.sub(r"<[^>]+>", " ", value or "")
+    text = text.replace("\xa0", " ").replace("&nbsp;", " ")
+    return re.sub(r"\s+", " ", text).strip().strip('"').strip()
+
+
+def _headline(summary: str | None) -> str:
+    text = _clean(summary)
+    text = re.sub(r"^(possible alpr item:|stance shift:)\s*", "", text, flags=re.I)
+    sentence = re.split(r"(?<=[.!?])\s+", text)[0].strip()
+    if len(sentence) > 170:
+        sentence = sentence[:167].rsplit(" ", 1)[0].rstrip(",;:") + "."
+    if sentence and sentence[-1] not in ".!?":
+        sentence += "."
+    return sentence or "Something changed on license plate readers."
+
+
+def _short_link(url: str) -> str:
+    text = url.replace("https://", "").replace("http://", "").strip("/")
+    if len(text) > 48:
+        text = text[:45].rsplit("/", 1)[0] or text[:45]
+    return text or "Source"
+
+
+def _quote(quote: str | None) -> str:
+    text = _clean(quote)
+    if len(text) > 280:
+        text = text[:277].rsplit(" ", 1)[0].rstrip(",;:") + "..."
+    return text
+
+
+def _stance_for(signal: dict[str, Any]) -> str:
+    stored = (signal.get("alpr_stance") or "").strip()
+    if stored in {"Positive for ALPR", "Negative for ALPR", "Mixed for ALPR", "Neutral / Mixed for ALPR"}:
+        return MIXED if stored == "Neutral / Mixed for ALPR" else stored
+    return derive_alpr_stance(signal.get("summary"), signal.get("quote"), signal.get("key_date_meaning"))
+
+
+def signal_card(signal: dict[str, Any], url: str | None = None) -> dict[str, str]:
+    """The one layout Josh reads: stance, one sentence, quote, link."""
+    return {
+        "stance": badge(_stance_for(signal)),
+        "headline": _headline(signal.get("summary")),
+        "quote": _quote(signal.get("quote")),
+        "url": url or "",
+    }
+
+
 def render_digest(
     signals: list[dict[str, Any]],
     *,
@@ -68,76 +119,64 @@ def render_digest(
     recent_signals: list[dict[str, Any]] | None = None,
     lookback_days: int | None = None,
     source_health: list[str] | None = None,
-) -> tuple[str, str] | None:
-    """Return (subject, body) when at least one signal scores 40 or higher."""
-    visible = [signal for signal in signals if (signal.get("score") or 0) >= 20]
-    act = [signal for signal in visible if (signal.get("score") or 0) >= 70]
-    watch = [signal for signal in visible if 40 <= (signal.get("score") or 0) <= 69]
-    if not act and not watch:
+) -> tuple[str, str, str] | None:
+    """Return (subject, plain text, html) when a signal scores 40 or higher."""
+    del agencies, run_errors, sources_checked, weekly, recent_signals, lookback_days, source_health
+    chosen = [signal for signal in signals if (signal.get("score") or 0) >= 40]
+    chosen.sort(key=lambda signal: (-(signal.get("score") or 0), signal.get("id") or 0))
+    if not chosen:
         return None
-
-    def line(index: int, signal: dict[str, Any]) -> str:
-        agency = agencies.get(signal.get("agency_id") or "", {})
-        label = agency.get("name") or signal.get("agency_name_raw") or "Unassigned"
-        short = label.replace(" Police Department", " PD")
-        summary = signal.get("summary") or ""
-        if signal.get("key_date"):
-            summary = f"{summary} {signal.get('key_date_meaning') or 'Date'} {signal['key_date']}."
-        quote = signal.get("quote") or ""
-        doc = documents.get(signal.get("document_id") or -1, {})
-        url = doc.get("url") or ""
-        return (
-            f"{index}. [{signal.get('score')}] {short}: {signal.get('signal_type')}\n"
-            f"   {summary.strip()}\n"
-            f"   \"{quote}\"\n"
-            f"   {url}"
+    count = len(chosen)
+    subject = f"ALPR Update ({today.strftime('%b')} {today.day}): {count} signal" + ("" if count == 1 else "s")
+    plain_blocks = []
+    html_blocks = []
+    colors = {
+        "Positive for ALPR": "#1b7f3a",
+        "Negative for ALPR": "#b42318",
+        "Mixed for ALPR": "#b54708",
+    }
+    for signal in chosen:
+        url = (documents.get(signal.get("document_id") or -1, {}) or {}).get("url") or ""
+        card = signal_card(signal, url)
+        label, title, quoted = card["stance"], card["headline"], card["quote"]
+        plain = [f"**{label}** — {title}"]
+        if quoted:
+            plain.append(f"> \"{quoted}\"")
+        if url:
+            plain.append(url)
+        plain_blocks.append("\n".join(plain))
+        ink = colors.get(label, colors["Mixed for ALPR"])
+        quote_html = (
+            f"<blockquote style=\"margin:12px 0 0;padding:0 0 0 12px;border-left:3px solid #ddd;"
+            f"font-size:17px;line-height:1.45;color:#1c1c1c;\">“{html.escape(quoted)}”</blockquote>"
+            if quoted
+            else ""
         )
-
-    sections = ["ACT NOW"]
-    if act:
-        sections.extend(line(i, signal) for i, signal in enumerate(act, 1))
-    else:
-        sections.append("(none)")
-    sections.append("")
-    sections.append("WATCH")
-    if watch:
-        sections.extend(line(i, signal) for i, signal in enumerate(watch, 1))
-    else:
-        sections.append("(none)")
-
-    upcoming = []
-    horizon = today + timedelta(days=30)
-    for signal in signals:
-        key = _parse_date(signal.get("key_date"))
-        if key and today <= key <= horizon:
-            agency = agencies.get(signal.get("agency_id") or "", {})
-            label = agency.get("governing_body") or agency.get("name") or signal.get("agency_name_raw") or ""
-            meaning = signal.get("key_date_meaning") or signal.get("signal_type")
-            upcoming.append((key.isoformat(), f"{key.isoformat()}  {label} {meaning}".strip()))
-    sections.append("")
-    sections.append("UPCOMING DATES (next 30 days)")
-    sections.extend(item for _, item in sorted(upcoming) or [("", "(none)")])
-
-    if weekly:
-        sections.extend(_weekly_section(recent_signals or signals, agencies, today))
-
-    failed = run_errors or []
-    detail = "; ".join(f"{err.get('source_id')}: {err.get('message')}" for err in failed) or "none"
-    sections.append("")
-    sections.append(
-        f"RUN HEALTH\n{sources_checked} sources checked, {len(failed)} failed ({detail})"
+        link_html = (
+            f"<p style=\"margin:12px 0 0;\"><a href=\"{html.escape(url, quote=True)}\" "
+            f"style=\"color:#0b57d0;font-size:16px;\">{html.escape(_short_link(url))}</a></p>"
+            if url
+            else ""
+        )
+        html_blocks.append(
+            "<tr><td style=\"padding:0 0 28px;\">"
+            f"<p style=\"margin:0;font-size:18px;line-height:1.4;color:#111;\">"
+            f"<strong style=\"color:{ink};\">{html.escape(label)}</strong> — {html.escape(title)}</p>"
+            f"{quote_html}{link_html}</td></tr>"
+        )
+    plain_body = ("\n\n".join(plain_blocks)).strip() + "\n"
+    html_body = (
+        "<!DOCTYPE html><html><body style=\"margin:0;background:#f6f6f4;\">"
+        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\" style=\"background:#f6f6f4;\">"
+        "<tr><td align=\"center\" style=\"padding:28px 16px;\">"
+        "<table role=\"presentation\" width=\"100%\" style=\"max-width:560px;background:#ffffff;border-radius:12px;padding:8px 8px 0;\">"
+        f"<tr><td style=\"padding:20px 20px 8px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;\">"
+        f"<p style=\"margin:0 0 22px;font-size:15px;color:#666;\">{html.escape(subject)}</p>"
+        "<table role=\"presentation\" width=\"100%\">"
+        + "".join(html_blocks)
+        + "</table></td></tr></table></td></tr></table></body></html>"
     )
-    sections.append("")
-    sections.append("SOURCE HEALTH")
-    counts = [line for line in (source_health or []) if not line.startswith("warnings:")]
-    sections.extend(counts or ["(none)"])
-    warning_line = next((line for line in (source_health or []) if line.startswith("warnings:")), "")
-    if warning_line:
-        sections.append(warning_line.replace("warnings: ", "Warnings: ", 1))
-    subject = f"ALPR signals: {len(act)} act now, {len(watch)} watch ({today.isoformat()})"
-    if lookback_days:
-        subject = f"{subject} Backfill: last {lookback_days} days"
-    return subject, "\n".join(sections).strip() + "\n"
+    return subject, plain_body, html_body
 
 
 def _weekly_section(signals: list[dict[str, Any]], agencies: dict[str, dict[str, Any]], today: date) -> list[str]:
@@ -174,7 +213,15 @@ def _weekly_section(signals: list[dict[str, Any]], agencies: dict[str, dict[str,
     return lines
 
 
-def send_gmail(subject: str, body: str, *, user: str, password: str, recipient: str) -> None:
+def send_gmail(
+    subject: str,
+    body: str,
+    *,
+    user: str,
+    password: str,
+    recipient: str,
+    html_body: str | None = None,
+) -> None:
     if recipient.lower() != DIGEST_RECIPIENT:
         raise RuntimeError(f"refusing to email {recipient}; digest recipient is fixed")
     message = EmailMessage()
@@ -182,6 +229,8 @@ def send_gmail(subject: str, body: str, *, user: str, password: str, recipient: 
     message["From"] = user
     message["To"] = recipient
     message.set_content(body)
+    if html_body:
+        message.add_alternative(html_body, subtype="html")
     with smtplib.SMTP("smtp.gmail.com", 587, timeout=30) as smtp:
         smtp.ehlo()
         smtp.starttls()
@@ -197,6 +246,7 @@ def deliver(
     smtp_password: str | None,
     recipient: str | None,
     sender: SendFunc | None = None,
+    html_body: str | None = None,
 ) -> str:
     """Send the digest or return a skip reason. Never emails any address but the fixed recipient."""
     target = (recipient or "").strip()
@@ -207,5 +257,5 @@ def deliver(
         return "sent"
     if not smtp_user or not smtp_password:
         return "digest not sent: SMTP credentials are not set"
-    send_gmail(subject, body, user=smtp_user, password=smtp_password, recipient=target)
+    send_gmail(subject, body, user=smtp_user, password=smtp_password, recipient=target, html_body=html_body)
     return "sent"

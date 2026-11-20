@@ -312,7 +312,7 @@ def test_source_health_warns_when_a_bill_source_is_silent():
     assert not any("0 passed the prefilter" in line for line in lines)
     assert any(line.startswith("warnings:") and "nc-bills: returned 0 documents" in line and "ky-events: HTTP 429" in line for line in lines)
     assert "eff-news" not in next(line for line in lines if line.startswith("warnings:"))
-    subject, body = render_digest(
+    subject, body, html_body = render_digest(
         [{"id": 1, "document_id": 1, "score": 50, "signal_type": "legislation_event", "summary": "A bill moved.", "quote": "quote", "agency_id": None}],
         documents={1: {"url": "https://example.test/bill"}},
         agencies={},
@@ -321,9 +321,12 @@ def test_source_health_warns_when_a_bill_source_is_silent():
         today=TODAY,
         source_health=lines,
     )
-    assert "SOURCE HEALTH" in body
-    assert "Warnings: nc-bills: returned 0 documents; ky-events: HTTP 429" in body
-    assert subject.startswith("ALPR signals:")
+    assert "SOURCE HEALTH" not in body and "SOURCE HEALTH" not in html_body
+    assert "Warnings:" not in body
+    assert "act now" not in subject.lower()
+    assert subject.startswith("ALPR Update")
+    assert "legislation_event" not in body
+    assert "50" not in body
 
 
 def test_nc_s257_and_tn_peeps_pass_prefilter(tmp_path, monkeypatch):
@@ -511,6 +514,153 @@ def test_openstates_retries_after_429():
     assert calls["n"] == 2
     assert 1 in waits
     http.close()
+
+
+def test_email_is_plain_stance_quote_and_link():
+    from monitor.digest import render_digest
+
+    today = date(2026, 11, 19)
+    subject, body, html_body = render_digest(
+        [
+            {
+                "id": 1,
+                "document_id": 1,
+                "score": 81,
+                "signal_type": "legislation_event",
+                "confidence": 0.9,
+                "summary": "North Carolina made its highway ALPR program permanent.",
+                "quote": "S.L. 2026-41 creates a permanent highway automatic license plate reader program.",
+                "alpr_stance": "Positive for ALPR",
+            },
+            {
+                "id": 2,
+                "document_id": 2,
+                "score": 68,
+                "signal_type": "legislation_event",
+                "summary": "Kentucky capped ALPR data retention at 90 days.",
+                "quote": "restrict use of automated license plate readers; establish limitations on use and sale of data",
+                "alpr_stance": "Negative for ALPR",
+            },
+        ],
+        documents={
+            1: {"url": "https://legiscan.com/NC/bill/S257/2025"},
+            2: {"url": "https://legiscan.com/KY/bill/HB58/2026"},
+        },
+        agencies={},
+        run_errors=[{"source_id": "nc-bills", "message": "HTTP 429"}],
+        sources_checked=12,
+        today=today,
+        lookback_days=365,
+        source_health=["warnings: nc-bills: returned 0 documents"],
+    )
+    assert subject == "ALPR Update (Nov 19): 2 signals"
+    for junk in ("81", "68", "Act now", "Watch", "legislation_event", "SOURCE HEALTH", "Backfill", "confidence"):
+        assert junk not in body
+        assert junk not in html_body
+    assert "**Positive for ALPR** — North Carolina made its highway ALPR program permanent." in body
+    assert "> \"S.L. 2026-41 creates a permanent highway automatic license plate reader program.\"" in body
+    assert "**Negative for ALPR** — Kentucky capped ALPR data retention at 90 days." in body
+    assert "legiscan.com/NC/bill/S257/2025" in body
+    assert "Positive for ALPR" in html_body and "#1b7f3a" in html_body
+    assert "Negative for ALPR" in html_body and "#b42318" in html_body
+
+
+def test_notion_page_uses_the_same_clean_format():
+    from monitor.notion_sync import NotionSync
+
+    class Blocks:
+        def __init__(self):
+            self.children_appended = []
+            self.deleted = []
+
+        def list(self, block_id):
+            return {"results": [{"id": "old-paragraph", "type": "paragraph"}]}
+
+        def append(self, block_id, children):
+            self.children_appended.append((block_id, children))
+            return {}
+
+    class Pages:
+        def __init__(self):
+            self.created = []
+
+        def create(self, parent, properties):
+            self.created.append(properties)
+            return {"id": "page-1"}
+
+        def update(self, page_id, properties):
+            return {"id": page_id}
+
+    class DataSources:
+        def query(self, data_source_id, filter, page_size=1):
+            return {"results": []}
+
+        def update(self, data_source_id, properties):
+            return {"id": data_source_id}
+
+    class Databases:
+        def retrieve(self, database_id):
+            return {"id": database_id, "data_sources": [{"id": database_id}]}
+
+    blocks = Blocks()
+
+    class Client:
+        pass
+
+    client = Client()
+    client.pages = Pages()
+    client.data_sources = DataSources()
+    client.databases = Databases()
+    client.blocks = type("B", (), {"children": blocks, "delete": lambda self, block_id: blocks.deleted.append(block_id)})()
+    notion = NotionSync(client, signals_db="signals-db", agencies_db="")
+    page_id = notion.upsert_signal(
+        {
+            "id": 9,
+            "score": 81,
+            "tier": "Act now",
+            "signal_type": "legislation_event",
+            "summary": "North Carolina made its highway ALPR program permanent.",
+            "quote": "automatic license plate reader program",
+            "alpr_stance": "Positive for ALPR",
+        },
+        {"url": "https://legiscan.com/NC/bill/S257/2025"},
+        None,
+    )
+    assert page_id == "page-1"
+    props = client.pages.created[0]
+    title = props["Summary"]["title"][0]["text"]["content"]
+    assert title == "North Carolina made its highway ALPR program permanent."
+    assert "Act now" not in str(props)
+    assert "legislation_event" not in str(props)
+    assert props["ALPR stance"]["select"]["name"] == "Positive for ALPR"
+    assert props["Quote"]["rich_text"][0]["text"]["content"].startswith('"')
+    assert props["Source"]["url"].endswith("S257/2025")
+    _page, children = blocks.children_appended[0]
+    text = str(children)
+    assert "Positive for ALPR" in text
+    assert "automatic license plate reader program" in text
+    assert "S257/2025" in text
+    assert "old-paragraph" in blocks.deleted
+
+
+def test_carthage_lpr_appropriation_stays_background():
+    score, tier = score_signal(
+        {
+            "signal_type": "legislation_event",
+            "confidence": 0.9,
+            "summary": "Mississippi HB4103 appropriates $375,000 to the Carthage Police Department for LPR cameras.",
+            "quote": "Carthage Police Department",
+            "key_date_meaning": "Passed the House",
+            "dollar_amount": 375000,
+        },
+        agency=None,
+        person=None,
+        stance_changed=False,
+        today=date(2026, 11, 19),
+        state="MS",
+    )
+    assert score < 40
+    assert tier == "Background"
 
 
 def test_context_terms_match_agency_agendas_only(tmp_path):
@@ -1488,7 +1638,7 @@ def test_digest_and_notion_upsert_once(tmp_path, monkeypatch):
     )
     assert len(sent) == 1
     assert sent[0][2] == "josh.ferguson3@gmail.com"
-    assert sent[0][0].startswith("ALPR signals:")
+    assert sent[0][0].startswith("ALPR Update")
     created_pages = len(notion.client.creates)
     assert created_pages >= 1
     execute(
@@ -1878,7 +2028,8 @@ def test_lookback_reclassifies_stored_documents_without_duplicate_signals(tmp_pa
     assert "prefilter_hits: 1" in output
     assert "source marietta-news: fetched 0, prefilter 1, signals 1" in output
     assert store.conn.execute("SELECT COUNT(*) AS n FROM signals").fetchone()["n"] == 1
-    assert sent and "Backfill: last 40 days" in sent[0]
+    assert sent and sent[0].startswith("ALPR Update")
+    assert "Backfill" not in sent[0]
     execute(
         registry,
         store,

@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from monitor.bills import bill_key, status_kind
+from monitor.impact import derive_alpr_stance
 from monitor.classify import Classifier
 from monitor.collectors.civicplus import CivicPlusCollector
 from monitor.collectors.congress import CongressCollector
@@ -203,6 +204,11 @@ def _build_signal(result: dict, meta: dict, registry: Registry, store: Store, to
         "quote": result.get("quote"),
         "confidence": result.get("confidence") if result.get("confidence") is not None else 0,
         "needs_review": needs,
+        "alpr_stance": derive_alpr_stance(
+            result.get("summary"),
+            result.get("quote"),
+            result.get("key_date_meaning"),
+        ),
     }
     if meta.get("doc_type") == "bill":
         status = _bill_status_line(meta.get("bill_text") or meta.get("text") or "")
@@ -669,11 +675,12 @@ def execute(
             source_health=health,
         )
         if rendered:
-            subject, body = rendered
+            subject, body, html_body = rendered
             try:
                 status = deliver(
                     subject,
                     body,
+                    html_body=html_body,
                     smtp_user=os.environ.get("SMTP_USER"),
                     smtp_password=os.environ.get("SMTP_APP_PASSWORD"),
                     recipient=os.environ.get("DIGEST_TO"),
@@ -857,11 +864,12 @@ def publish_only(
             source_health=store.latest_source_health(),
         )
         if rendered:
-            subject, body = rendered
+            subject, body, html_body = rendered
             try:
                 status = deliver(
                     subject,
                     body,
+                    html_body=html_body,
                     smtp_user=os.environ.get("SMTP_USER"),
                     smtp_password=os.environ.get("SMTP_APP_PASSWORD"),
                     recipient=os.environ.get("DIGEST_TO"),

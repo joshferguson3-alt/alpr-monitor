@@ -59,9 +59,22 @@ def status_text(blob: str) -> str:
 
 def is_local_appropriation(blob: str) -> bool:
     text = status_text(blob)
-    if "court technology" in text:
+    if "court technology" in text or "local bill" in text:
         return True
-    if "local bill" in text:
+    money = any(phrase in text for phrase in ("appropriat", "funding", "$"))
+    place = any(
+        phrase in text
+        for phrase in (
+            "city of ",
+            "town of ",
+            "police department",
+            "police dept",
+            "sheriff",
+        )
+    )
+    if money and place:
+        if any(phrase in text for phrase in ("statewide", "state bureau", "department of transportation", "session law", "s.l.")):
+            return False
         return True
     if "city of " in text or "county of " in text:
         return "appropriat" in text or "license plate" in text or "lpr" in text or "alpr" in text
